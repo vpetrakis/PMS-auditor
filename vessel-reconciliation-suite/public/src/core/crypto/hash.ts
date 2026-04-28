@@ -1,26 +1,44 @@
-import { AuditResult } from '../engine/discrepancy';
+// ═══════════════════════════════════════════════════════════════════════════
+// VESSEL RECONCILIATION SUITE — Cryptographic Integrity Layer
+// Uses the Web Crypto API (SubtleCrypto) for a true SHA-256 digest.
+// The seal is deterministic: same audit data always produces the same hash.
+// ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * Generates an offline SHA-256 hash from the verified audit results.
- */
+import type { AuditResult } from '../engine/discrepancy';
+
+// ─── Canonical Serialiser ───────────────────────────────────────────────────
+// Produces a stable JSON string regardless of object key insertion order.
+// Dates are normalised to ISO-8601 UTC strings.
+
+function canonicalise(results: AuditResult[]): string {
+  const payload = results.map(r => ({
+    c:  r.componentName,
+    s:  r.parentSystem,
+    oh: r.overhaulDate.toISOString(),
+    lh: r.legacyHours,
+    vh: r.verifiedHours,
+    d:  r.delta,
+    ok: r.isCompliant,
+  }));
+  return JSON.stringify(payload);
+}
+
+// ─── SHA-256 Digest ─────────────────────────────────────────────────────────
+
 export async function generateDigitalSeal(results: AuditResult[]): Promise<string> {
-  if (!results || results.length === 0) {
-    throw new Error("Cannot generate seal: No audit results provided.");
-  }
+  if (results.length === 0) return '0'.repeat(64);
 
-  // 1. Create a deterministic, stringified version of the payload
-  const payloadString = JSON.stringify(results);
+  const encoder  = new TextEncoder();
+  const bytes    = encoder.encode(canonicalise(results));
+  const hashBuf  = await crypto.subtle.digest('SHA-256', bytes);
+  const hashArr  = Array.from(new Uint8Array(hashBuf));
 
-  // 2. Encode string to Uint8Array
-  const encoder = new TextEncoder();
-  const data = encoder.encode(payloadString);
+  return hashArr.map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
-  // 3. Generate hash using native browser Web Crypto API
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+// ─── Display Helpers ────────────────────────────────────────────────────────
 
-  // 4. Convert ArrayBuffer to Hex String
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-
-  return hashHex;
+export function truncateSeal(seal: string, prefixLen = 16, suffixLen = 8): string {
+  if (seal.length <= prefixLen + suffixLen) return seal;
+  return `${seal.slice(0, prefixLen)}…${seal.slice(-suffixLen)}`;
 }
