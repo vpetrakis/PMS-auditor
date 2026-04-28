@@ -1,4 +1,7 @@
 streamlit
 pandas
 openpyxl
+xlrd
 python-docx
+lxml
+beautifulsoup4
