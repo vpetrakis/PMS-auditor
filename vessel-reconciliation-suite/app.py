@@ -1,304 +1,621 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import io
 import re
+import io
 import hashlib
-from datetime import datetime
 import warnings
+from datetime import datetime
 
 try:
     from docx import Document
+    HAS_DOCX = True
 except ImportError:
-    pass
+    HAS_DOCX = False
 
 warnings.filterwarnings("ignore")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 1. ENTERPRISE PAGE CONFIGURATION & PREMIUM CSS (TITAN AESTHETIC)
-# ═══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(page_title="Vessel Reconciliation Suite", page_icon="⚓", layout="wide", initial_sidebar_state="collapsed")
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# CSS
+# ═══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=JetBrains+Mono:wght@400;700&display=swap');
-    
-    .stApp { background-color: #060b13; font-family: 'Inter', sans-serif; color: #f8fafc; }
-    #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
-    
-    .hero { border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 20px; margin-bottom: 30px; }
-    .hero-title { font-size: 2.5rem; font-weight: 800; background: linear-gradient(90deg, #ffffff, #8ba1b5); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: -1px; }
-    .hero-sub { font-size: 0.95rem; color: #64748b; font-weight: 500; text-transform: uppercase; letter-spacing: 2px; }
-    
-    .stFileUploader > div > div { background-color: rgba(13, 21, 34, 0.6) !important; border: 1px dashed rgba(255,255,255,0.1) !important; border-radius: 12px !important; transition: all 0.3s ease; }
-    .stFileUploader > div > div:hover { border-color: #00e0b0 !important; background-color: rgba(0, 224, 176, 0.05) !important; }
-    
-    .hud-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px; }
-    .hud-card { background: rgba(13, 21, 34, 0.8); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.05); border-radius: 12px; padding: 24px; box-shadow: 0 10px 30px -10px rgba(0,0,0,0.5); }
-    .hud-card.success { border-bottom: 3px solid #00e0b0; }
-    .hud-card.warn { border-bottom: 3px solid #ff2a55; }
-    .hud-title { font-size: 0.8rem; color: #64748b; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600; margin-bottom: 10px; }
-    .hud-val { font-size: 2.2rem; font-weight: 800; color: #ffffff; line-height: 1.1; font-family: 'JetBrains Mono', monospace; }
-    .hud-sub { font-size: 0.8rem; color: #475569; margin-top: 8px; }
-    
-    .stDataFrame { border-radius: 12px; overflow: hidden; border: 1px solid rgba(255,255,255,0.05); }
-    </style>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Sora:wght@400;500;600;700;800&display=swap');
+.stApp { background:#f8fafc; font-family:'Sora',sans-serif; color:#1e293b; }
+#MainMenu,footer,header {visibility:hidden;}
+.hero { border-bottom:2px solid #e2e8f0; padding-bottom:20px; margin-bottom:30px; }
+.hero-title { font-size:2rem; font-weight:800; color:#1e293b; letter-spacing:-0.03em; }
+.hero-sub { font-size:0.8rem; color:#94a3b8; font-weight:600; text-transform:uppercase; letter-spacing:0.12em; margin-top:4px; }
+.kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:16px; margin-bottom:28px; }
+.kpi-card { background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:20px; box-shadow:0 1px 4px rgba(0,0,0,0.04); border-top:4px solid #3b82f6; }
+.kpi-card.red { border-top-color:#ef4444; }
+.kpi-card.amber { border-top-color:#f59e0b; }
+.kpi-card.green { border-top-color:#10b981; }
+.kpi-card.violet { border-top-color:#8b5cf6; }
+.kpi-label { font-size:0.7rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.12em; font-weight:600; margin-bottom:8px; }
+.kpi-val { font-size:2rem; font-weight:800; color:#1e293b; font-family:'IBM Plex Mono',monospace; }
+.kpi-sub { font-size:0.72rem; color:#cbd5e1; margin-top:6px; }
+.seal-box { background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:16px 20px; font-family:'IBM Plex Mono',monospace; font-size:0.72rem; color:#64748b; margin-bottom:20px; word-break:break-all; }
+</style>
 """, unsafe_allow_html=True)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 2. OMNI-PARSER (With C-Engine Buffer Overflow Failsafes)
-# ═══════════════════════════════════════════════════════════════════════════════
-def extract_semantic_timeline(df_raw):
-    """Hunts for Date and Main Engine vectors inside any grid structure."""
-    if df_raw is None or df_raw.empty: return None
-    header_idx, date_idx, me_idx = -1, -1, -1
-    
-    df_raw = df_raw.astype(str)
-    
-    for i in range(min(50, len(df_raw))):
-        vals = [str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)]
-        if any('DATE' in v or 'DAY' in v for v in vals) and any('MAIN' in v or 'ME ' in v for v in vals):
-            header_idx = i
-            for j, val in enumerate(df_raw.iloc[i].values):
-                v_str = str(val).upper() if pd.notna(val) else ""
-                if 'DATE' in v_str or 'DAY' in v_str: date_idx = j
-                elif 'MAIN' in v_str or 'ME ' in v_str: me_idx = j
-            break
-            
-    if header_idx != -1 and date_idx != -1 and me_idx != -1:
-        df = df_raw.iloc[header_idx + 1:].copy()
-        clean_df = pd.DataFrame()
-        clean_df['Date'] = pd.to_datetime(df.iloc[:, date_idx], errors='coerce')
-        # Extract purely numbers and decimals, stripping toxic strings
-        clean_df['ME_Hours'] = df.iloc[:, me_idx].apply(lambda x: re.sub(r'[^\d.]', '', str(x)))
-        clean_df['ME_Hours'] = pd.to_numeric(clean_df['ME_Hours'], errors='coerce').fillna(0.0)
-        return clean_df.dropna(subset=['Date'])
-    return None
-
-def pure_python_grid_extractor(file_bytes):
-    """Bypasses Pandas entirely to prevent C-engine Buffer Overflows on legacy .doc files."""
-    # 1. Decode safely, ignoring toxic bytes
-    raw_text = file_bytes.decode('latin-1', errors='ignore')
-    
-    # 2. Strip NULL bytes (\x00) which are the #1 cause of Pandas buffer overflows
-    clean_text = raw_text.replace('\x00', '')
-    
-    # 3. HTML Table Bypass (Many legacy maritime .doc files are just hidden HTML)
-    if '<table' in clean_text.lower():
-        try:
-            tables = pd.read_html(io.StringIO(clean_text))
-            for t in tables:
-                res = extract_semantic_timeline(t)
-                if res is not None and not res.empty: return res
-        except: pass
-
-    # 4. Pure Regex/String Split Grid Reconstruction (Zero C-Engine Involvement)
-    lines = clean_text.splitlines()
-    synthetic_grid = []
-    for line in lines:
-        # Split by tabs or 2+ consecutive spaces
-        row = re.split(r'\t|\s{2,}', line.strip())
-        if len(row) > 1:
-            synthetic_grid.append(row)
-            
-    if synthetic_grid:
-        df_raw = pd.DataFrame(synthetic_grid)
-        return extract_semantic_timeline(df_raw)
-        
-    return None
-
-def omni_crack_file(file_bytes, file_name):
-    """The Sequential Decryption Chamber."""
-    # 1. Standard Modern Excel
-    if file_name.endswith(('.xlsx', '.xls')):
-        try:
-            df = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl' if file_name.endswith('.xlsx') else 'xlrd', dtype=str)
-            res = extract_semantic_timeline(df)
-            if res is not None: return res
-        except: pass
-
-    # 2. True Word Document
-    if file_name.endswith('.docx'):
-        try:
-            doc = Document(io.BytesIO(file_bytes))
-            data = [[cell.text.strip() for cell in row.cells] for table in doc.tables for row in table.rows]
-            if data:
-                res = extract_semantic_timeline(pd.DataFrame(data))
-                if res is not None: return res
-        except: pass
-
-    # 3. The Ultimate Pure-Python Failsafe (Handles the .doc crash)
-    return pure_python_grid_extractor(file_bytes)
-
-@st.cache_data(show_spinner=False)
-def parse_multiple_logs(log_files):
-    all_logs = []
-    failed_files = []
-    
-    for f in log_files:
-        clean_df = omni_crack_file(f.getvalue(), f.name.lower())
-        if clean_df is not None and not clean_df.empty:
-            all_logs.append(clean_df)
-        else:
-            failed_files.append(f.name)
-            
-    if not all_logs:
-        raise ValueError(f"Complete Data Void. System could not extract semantic grids from: {', '.join(failed_files)}. Verify the files are not scanned pictures.")
-        
-    master_timeline = pd.concat(all_logs, ignore_index=True)
-    master_timeline = master_timeline.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').reset_index(drop=True)
-    return master_timeline, failed_files
-
-@st.cache_data(show_spinner=False)
-def parse_single_pms(file_bytes):
-    df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl', dtype=str)
-    header_idx, comp_idx, date_idx, hrs_idx = -1, -1, -1, -1
-
-    for i in range(min(50, len(df_raw))):
-        vals = [str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)]
-        if any('ITEM' in v or 'COMPONENT' in v or 'DESCRIPTION' in v for v in vals) and any('DATE' in v or 'OVERHAUL' in v or 'INSP' in v for v in vals):
-            header_idx = i
-            for j, val in enumerate(df_raw.iloc[i].values):
-                v_str = str(val).upper() if pd.notna(val) else ""
-                if 'ITEM' in v_str or 'COMPONENT' in v_str or 'NAME' in v_str or 'DESCRIPTION' in v_str: comp_idx = j
-                elif 'DATE' in v_str or 'OVERHAUL' in v_str or 'INSP' in v_str: date_idx = j
-                elif 'HOUR' in v_str or 'RUN' in v_str or 'CURRENT' in v_str: hrs_idx = j
-            break
-
-    if header_idx == -1: comp_idx, date_idx, hrs_idx, header_idx = 1, 5, 7, 7 
-
-    df = df_raw.iloc[header_idx + 1:].copy()
-    clean_df = pd.DataFrame()
-    clean_df['Component'] = df.iloc[:, comp_idx].astype(str).str.strip()
-    clean_df['Last_Overhaul'] = pd.to_datetime(df.iloc[:, date_idx], errors='coerce')
-    clean_df['Claimed_Hours'] = pd.to_numeric(df.iloc[:, hrs_idx], errors='coerce').fillna(0)
-    
-    clean_df = clean_df[(clean_df['Component'] != 'nan') & (clean_df['Component'] != 'None') & (clean_df['Component'] != '')]
-    return clean_df.dropna(subset=['Last_Overhaul']).reset_index(drop=True)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 3. FRONTEND UI & LOGIC ROUTER
-# ═══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="hero">
-    <div class="hero-title">VESSEL RECONCILIATION SUITE</div>
-    <div class="hero-sub">M/V Minoan Falcon | Zero-Trust Forensic Auditor</div>
+    <div class="hero-title">⚓ VESSEL RECONCILIATION SUITE</div>
+    <div class="hero-sub">Zero-Trust Forensic Running Hours Auditor</div>
 </div>
 """, unsafe_allow_html=True)
 
-with st.container():
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>1. TARGET BASELINE (PMS)</div>", unsafe_allow_html=True)
-        pms_file = st.file_uploader("Upload TEC-001 Master Sheet", type=["xlsx", "xls"], key="pms")
-    with col2:
-        st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>2. CHRONOLOGICAL LOGS</div>", unsafe_allow_html=True)
-        logs_files = st.file_uploader("Upload Monthly Log(s). Multi-select enabled.", type=["xlsx", "xls", "docx", "doc", "csv", "txt", "rtf", "html"], accept_multiple_files=True, key="logs")
-
-if pms_file and logs_files:
+# ═══════════════════════════════════════════════════════════════════════════════
+# SAFE NUMBER — identical to Poseidon Titan's _sn()
+# ═══════════════════════════════════════════════════════════════════════════════
+def _sn(val):
+    """Strip all non-numeric chars and return float; NaN on garbage."""
+    if pd.isna(val): return np.nan
+    s = str(val).strip().upper()
+    if s in ['NIL','N/A','NA','XXX','NONE','UNKNOWN','BLANK','-','X','','NULL']: return np.nan
+    s = re.sub(r'[^\d.\-]', '', s)
     try:
-        with st.spinner("Initializing Enterprise Omni-Parser..."):
+        return float(s) if s and s not in ('.', '-', '-.') else np.nan
+    except ValueError:
+        return np.nan
+
+def _sn0(val):
+    v = _sn(val)
+    return 0.0 if np.isnan(v) else v
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SAFE DATE — handles all formats seen in maritime Excel files
+# ═══════════════════════════════════════════════════════════════════════════════
+def _safe_date(val):
+    if val is None or (isinstance(val, float) and np.isnan(val)): return pd.NaT
+    if isinstance(val, (pd.Timestamp, datetime)): return pd.Timestamp(val)
+    
+    s = str(val).strip()
+    if not s or s.lower() in ['-','n/a','nil','none','null','']: return pd.NaT
+    
+    # Typo corrections (Poseidon-style)
+    s = re.sub(r'20224', '2024', s)
+    s = re.sub(r'20023', '2023', s)
+    s = re.sub(r'20225', '2025', s)
+    
+    # "15 Jan 2024" or "15 Jan. 2024" → normalise
+    m = re.match(r'^(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{4})$', s)
+    if m:
+        s = f"{m.group(3)}-{m.group(2)[:3]}-{m.group(1).zfill(2)}"
+    
+    d = pd.to_datetime(s, errors='coerce', dayfirst=True)
+    if pd.notna(d): return d
+    
+    # DD/MM/YYYY
+    m2 = re.match(r'^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$', s)
+    if m2:
+        dd, mm, yy = m2.group(1), m2.group(2), m2.group(3)
+        yr = (1900 if int(yy) > 50 else 2000) + int(yy) if len(yy) == 2 else int(yy)
+        d = pd.to_datetime(f"{yr}-{mm}-{dd}", errors='coerce')
+        if pd.notna(d): return d
+    
+    return pd.NaT
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FORWARD-FILL ROW — Poseidon's pd.Series.ffill() equivalent
+# Propagates merged-cell header text to the right.
+# ═══════════════════════════════════════════════════════════════════════════════
+def _fwdfill(series):
+    last = ''
+    result = []
+    for v in series:
+        s = str(v).strip().upper() if pd.notna(v) else ''
+        if s and s not in ['NAN','NONE']:
+            last = s
+        result.append(last)
+    return result
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COLUMN MAPPER — LOG FILES
+# Mirrors Poseidon Titan's _map_columns() adapted for running-hours format.
+# c1 = forward-filled top header, c2 = sub-header below it
+# ═══════════════════════════════════════════════════════════════════════════════
+def _map_log_columns(top_filled, bottom, n):
+    cols = {}
+    for j in range(n):
+        c1 = str(top_filled[j]).upper().strip() if j < len(top_filled) else ''
+        c2 = str(bottom[j]).upper().strip()     if j < len(bottom)     else ''
+        cb = f"{c1} {c2}".strip()
+
+        if 'date' not in cols and ('DATE' in cb or 'DAY' in cb):
+            cols['date'] = j
+        if 'me' not in cols and (
+            'MAIN ENGINE' in cb or 'MAIN ENG' in cb or
+            'M/E' in c2 or 'M.E.' in c2 or c2 == 'ME' or
+            ('MAIN' in c1 and ('ENG' in c2 or c2 in ['','HRS','HOURS']))
+        ):
+            cols['me'] = j
+        if 'dg1' not in cols and (
+            'DG1' in cb or 'D/G 1' in cb or 'D.G.1' in cb or
+            'DG NO.1' in cb or 'GEN 1' in cb or 'G/E 1' in cb or 'AUX 1' in cb or
+            ('D/G' in c1 and ('1' == c2 or 'NO.1' in c2 or '1' in c2.split()))
+        ):
+            cols['dg1'] = j
+        if 'dg2' not in cols and (
+            'DG2' in cb or 'D/G 2' in cb or 'D.G.2' in cb or
+            'DG NO.2' in cb or 'GEN 2' in cb or 'G/E 2' in cb or 'AUX 2' in cb or
+            ('D/G' in c1 and ('2' == c2 or 'NO.2' in c2 or '2' in c2.split()))
+        ):
+            cols['dg2'] = j
+        if 'dg3' not in cols and (
+            'DG3' in cb or 'D/G 3' in cb or 'D.G.3' in cb or
+            'DG NO.3' in cb or 'GEN 3' in cb or 'G/E 3' in cb or 'AUX 3' in cb or
+            ('D/G' in c1 and ('3' == c2 or 'NO.3' in c2 or '3' in c2.split()))
+        ):
+            cols['dg3'] = j
+    return cols
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COLUMN MAPPER — PMS FILES
+# ═══════════════════════════════════════════════════════════════════════════════
+def _map_pms_columns(top_filled, bottom, n):
+    cols = {}
+    for j in range(n):
+        c1 = str(top_filled[j]).upper().strip() if j < len(top_filled) else ''
+        c2 = str(bottom[j]).upper().strip()     if j < len(bottom)     else ''
+        cb = f"{c1} {c2}".strip()
+
+        if 'component' not in cols and (
+            'COMPONENT' in cb or 'EQUIPMENT' in cb or 'DESCRIPTION' in cb or
+            'ITEM' in cb or 'JOB' in cb or 'TASK' in cb or 'NAME' in cb
+        ):
+            cols['component'] = j
+        if 'ohdate' not in cols and (
+            'OVERHAUL' in cb or 'LAST OH' in cb or 'O/H DATE' in cb or
+            'LAST O/H' in cb or 'INSP DATE' in cb or 'LAST INSP' in cb or
+            'LAST INSPECTION' in cb or 'COMPLETED' in cb or
+            ('DATE' in cb and 'component' in cols)
+        ):
+            cols['ohdate'] = j
+        if 'hours' not in cols and (
+            'RUNNING HOURS' in cb or 'R/H' in cb or 'HRS SINCE' in cb or
+            'CURRENT HRS' in cb or 'CLAIMED' in cb or 'HOURS SINCE' in cb or
+            'RUN HRS' in cb or 'CURRENT RUNNING' in cb or
+            ('HOURS' in cb and j > 0 and 'ohdate' in cols)
+        ):
+            cols['hours'] = j
+        if 'system' not in cols and (
+            'SYSTEM' in cb or 'MACHINERY' in cb or 'DEPT' in cb or
+            'CATEGORY' in cb or 'PARENT' in cb
+        ):
+            cols['system'] = j
+    return cols
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INFER SYSTEM (ME vs DG1/2/3) from component name + system column
+# ═══════════════════════════════════════════════════════════════════════════════
+def _infer_system(name, sys_val=''):
+    s = f"{str(name).upper()} {str(sys_val).upper()}"
+    if any(k in s for k in ['DG3','D/G 3','GEN 3','G/E 3','AUX 3','GENERATOR 3']): return 'DG3'
+    if any(k in s for k in ['DG2','D/G 2','GEN 2','G/E 2','AUX 2','GENERATOR 2']): return 'DG2'
+    if any(k in s for k in ['DG1','D/G 1','GEN 1','G/E 1','AUX 1','GENERATOR 1']): return 'DG1'
+    if any(k in s for k in ['DG','D/G','DIESEL GEN','GENERATOR','GENSET','AUX ENGINE']): return 'DG1'
+    return 'MAIN_ENGINE'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HEADER SCANNER — finds the row index with the key sentinel words
+# Mirrors Poseidon's "for i in range(min(150, len(df_raw)))" loop
+# ═══════════════════════════════════════════════════════════════════════════════
+def _find_header_row(df_raw, sentinel_groups, max_scan=80):
+    """
+    Returns (header_idx, top_filled, bottom) or (-1, None, None).
+    sentinel_groups: list of lists — every group must have at least one match.
+    """
+    for i in range(min(max_scan, len(df_raw))):
+        vals = [str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x) and str(x).strip() not in ('','NAN')]
+        all_match = all(
+            any(kw in v for v in vals for kw in group)
+            for group in sentinel_groups
+        )
+        if not all_match:
+            continue
+        
+        # Forward-fill this row (handles merged cells)
+        top_filled = _fwdfill(df_raw.iloc[i])
+        # Sub-header on the next row
+        bottom = [str(x).upper().strip() if pd.notna(x) else ''
+                  for x in (df_raw.iloc[i + 1].values if i + 1 < len(df_raw) else [])]
+        return i, top_filled, bottom
+    
+    return -1, None, None
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PARSE LOG FILE — uses Poseidon's dual-header approach
+# ═══════════════════════════════════════════════════════════════════════════════
+@st.cache_data(show_spinner=False)
+def parse_log_file(file_bytes, file_name):
+    """Returns (daily_df, error_string_or_None)"""
+    try:
+        if file_name.lower().endswith(('.xlsx', '.xls')):
+            wb = pd.read_excel(io.BytesIO(file_bytes), sheet_name=None, header=None, dtype=str, engine='openpyxl' if file_name.endswith('.xlsx') else 'xlrd')
+        else:
+            # CSV / TXT fallback
+            raw = file_bytes.decode('latin-1', errors='replace')
+            df_raw = pd.read_csv(io.StringIO(raw), header=None, on_bad_lines='skip', dtype=str)
+            wb = {'Sheet1': df_raw}
+        
+        for sheet_name, df_raw in wb.items():
+            if df_raw is None or len(df_raw) < 4:
+                continue
             
-            daily_df, failed_files = parse_multiple_logs(logs_files)
-            pms_df = parse_single_pms(pms_file.getvalue())
-            total_days_stitched = len(daily_df)
-
-            if failed_files:
-                st.warning(f"⚠️ Notice: The system skipped unreadable formats: {', '.join(failed_files)}")
-
-            physics_violations = []
-            for _, row in daily_df.iterrows():
-                if row['ME_Hours'] > 24 or row['ME_Hours'] < 0:
-                    physics_violations.append({
-                        "Date": row['Date'].strftime('%d-%b-%Y'),
-                        "System": "MAIN ENGINE",
-                        "Logged Hours": row['ME_Hours'],
-                        "Reason": "Kinematic Violation (Limit: 24h)"
-                    })
-
-            audit_results = []
-            for _, row in pms_df.iterrows():
-                comp = row['Component']
-                oh_date = row['Last_Overhaul']
-                legacy_hrs = row['Claimed_Hours']
+            header_idx, top_filled, bottom = _find_header_row(
+                df_raw,
+                sentinel_groups=[
+                    ['DATE', 'DAY'],
+                    ['MAIN', 'M/E', 'M.E.', 'MAIN ENGINE', 'ENGINE'],
+                ]
+            )
+            if header_idx == -1:
+                continue
+            
+            n = len(df_raw.columns)
+            bottom_padded = bottom + [''] * (n - len(bottom))
+            cols = _map_log_columns(top_filled, bottom_padded, n)
+            
+            if 'date' not in cols or 'me' not in cols:
+                continue
+            
+            # Determine where data actually begins
+            # If bottom row has meaningful sub-headers, skip it too
+            has_subheader = any(
+                c and c not in ['DATE','DAY','MAIN','M/E','ENGINE']
+                for c in bottom_padded[:n]
+            )
+            data_start = header_idx + (2 if has_subheader else 1)
+            
+            df_data = df_raw.iloc[data_start:].copy().reset_index(drop=True)
+            
+            rows = []
+            for _, row in df_data.iterrows():
+                vals = list(row.values)
+                date = _safe_date(vals[cols['date']] if cols['date'] < len(vals) else None)
+                if pd.isna(date): continue
+                if not (1980 <= date.year <= 2100): continue
                 
-                mask = daily_df['Date'] >= oh_date
-                verified_hrs = daily_df.loc[mask, 'ME_Hours'].sum()
-                delta = verified_hrs - legacy_hrs
-                
-                audit_results.append({
-                    "Component": comp,
-                    "Overhaul Date": oh_date.strftime('%d-%b-%Y'),
-                    "Legacy Claim": int(legacy_hrs),
-                    "Verified Math": int(verified_hrs),
-                    "Delta": int(delta),
-                    "Status": "VERIFIED" if int(delta) == 0 else "DRIFT DETECTED"
+                rows.append({
+                    'Date': date,
+                    'ME_Hours':  _sn0(vals[cols['me']]  if cols['me']  < len(vals) else None),
+                    'DG1_Hours': _sn0(vals[cols['dg1']] if 'dg1' in cols and cols['dg1'] < len(vals) else None),
+                    'DG2_Hours': _sn0(vals[cols['dg2']] if 'dg2' in cols and cols['dg2'] < len(vals) else None),
+                    'DG3_Hours': _sn0(vals[cols['dg3']] if 'dg3' in cols and cols['dg3'] < len(vals) else None),
                 })
-
-        # ═══════════════════════════════════════════════════════════════════════════════
-        # 4. PREMIUM HUD DASHBOARD
-        # ═══════════════════════════════════════════════════════════════════════════════
-        if audit_results:
-            st.markdown("<br><hr style='border-color: rgba(255,255,255,0.05);'><br>", unsafe_allow_html=True)
             
-            res_df = pd.DataFrame(audit_results)
-            errors_corrected = len(res_df[res_df['Delta'] != 0])
+            if rows:
+                return pd.DataFrame(rows), None
+        
+        return None, f"No sheet in '{file_name}' contained a recognisable DATE + MAIN ENGINE header row."
+    
+    except Exception as e:
+        return None, f"Parse error in '{file_name}': {str(e)}"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PARSE PMS FILE — same dual-header approach
+# ═══════════════════════════════════════════════════════════════════════════════
+@st.cache_data(show_spinner=False)
+def parse_pms_file(file_bytes, file_name):
+    """Returns (pms_df, error_string_or_None)"""
+    try:
+        wb = pd.read_excel(io.BytesIO(file_bytes), sheet_name=None, header=None, dtype=str, engine='openpyxl')
+        
+        for sheet_name, df_raw in wb.items():
+            if df_raw is None or len(df_raw) < 4:
+                continue
             
-            seal_source = res_df.to_json(orient='records')
-            digital_seal = hashlib.sha256(seal_source.encode()).hexdigest()
-
-            hud_html = f"""
-            <div class="hud-grid">
-                <div class="hud-card success">
-                    <div class="hud-title">Components Audited</div>
-                    <div class="hud-val">{len(res_df)}</div>
-                    <div class="hud-sub">Extracted via Semantic Engine</div>
-                </div>
-                <div class="hud-card {'warn' if errors_corrected > 0 else 'success'}">
-                    <div class="hud-title">Drift Anomalies</div>
-                    <div class="hud-val" style="color: {'#ff2a55' if errors_corrected > 0 else '#00e0b0'};">{errors_corrected}</div>
-                    <div class="hud-sub">Mathematical corrections applied</div>
-                </div>
-                <div class="hud-card">
-                    <div class="hud-title">Timeline Stitched</div>
-                    <div class="hud-val">{total_days_stitched}</div>
-                    <div class="hud-sub">Chronological Days Verified</div>
-                </div>
-                <div class="hud-card" style="border-bottom: 3px solid #7b68ee;">
-                    <div class="hud-title">Cryptographic Seal (SHA-256)</div>
-                    <div class="hud-val" style="font-size: 1.2rem; margin-top: 10px;">{digital_seal[:12]}...{digital_seal[-6:]}</div>
-                    <div class="hud-sub">Data integrity mathematically locked</div>
-                </div>
-            </div>
-            """
-            st.markdown(hud_html, unsafe_allow_html=True)
-
-            if physics_violations:
-                st.markdown("<h3 style='color:#ff2a55; font-size:1.2rem; margin-top:20px;'>⚠️ PHASE 1: KINEMATIC VIOLATIONS DETECTED</h3>", unsafe_allow_html=True)
-                st.dataframe(pd.DataFrame(physics_violations), use_container_width=True, hide_index=True)
-
-            st.markdown("<h3 style='color:#f8fafc; font-size:1.2rem; margin-top:20px;'>📑 PHASE 2: FORENSIC BASELINE RECONCILIATION</h3>", unsafe_allow_html=True)
-            
-            def style_dataframe(row):
-                if row['Delta'] > 0: return ['background-color: rgba(255, 42, 85, 0.1); color: #ff8a9f'] * len(row)
-                elif row['Delta'] < 0: return ['background-color: rgba(201, 168, 76, 0.1); color: #c9a84c'] * len(row)
-                return ['color: #00e0b0'] * len(row)
-            
-            st.dataframe(res_df.style.apply(style_dataframe, axis=1), use_container_width=True, hide_index=True)
-
-            st.markdown("<br>", unsafe_allow_html=True)
-            csv_data = res_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="⬇️ DOWNLOAD IMMUTABLE BASELINE (.CSV)",
-                data=csv_data,
-                file_name=f"Verified_Baseline_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime='text/csv',
-                type="primary"
+            header_idx, top_filled, bottom = _find_header_row(
+                df_raw,
+                sentinel_groups=[
+                    ['COMPONENT', 'EQUIPMENT', 'DESCRIPTION', 'ITEM', 'NAME', 'JOB'],
+                    ['DATE', 'OVERHAUL', 'OH', 'INSP', 'O/H', 'LAST'],
+                ]
             )
             
-        else:
-            st.error("Extraction Failed: No valid overhaul dates found in the PMS file.")
-
+            n = len(df_raw.columns)
+            
+            if header_idx == -1:
+                # TEC-001 hard fallback: data from row 8, col 1=name, col 5=date, col 7=hours
+                if len(df_raw) > 10 and n >= 8:
+                    header_idx = 7
+                    top_filled = [''] * n
+                    bottom = [''] * n
+                    cols = {'component': 1, 'ohdate': 5, 'hours': 7}
+                else:
+                    continue
+            else:
+                bottom_padded = bottom + [''] * (n - len(bottom))
+                cols = _map_pms_columns(top_filled, bottom_padded, n)
+                if 'component' not in cols: cols['component'] = 1
+                if 'ohdate'    not in cols: cols['ohdate']    = 5
+                if 'hours'     not in cols: cols['hours']     = 7
+            
+            has_subheader = any(
+                str(x).strip() and str(x).upper() not in ['NAN','']
+                for x in (df_raw.iloc[header_idx + 1].values if header_idx + 1 < len(df_raw) else [])
+            )
+            data_start = header_idx + (2 if has_subheader else 1)
+            df_data = df_raw.iloc[data_start:].copy().reset_index(drop=True)
+            
+            rows = []
+            for _, row in df_data.iterrows():
+                vals = list(row.values)
+                
+                raw_name = vals[cols['component']] if cols['component'] < len(vals) else None
+                if not raw_name or str(raw_name).strip().upper() in ['NAN','NONE','N/A','','-']:
+                    continue
+                
+                comp_name = str(raw_name).strip()
+                oh_date   = _safe_date(vals[cols['ohdate']] if cols['ohdate'] < len(vals) else None)
+                if pd.isna(oh_date): continue
+                if not (1980 <= oh_date.year <= 2100): continue
+                
+                hours      = _sn0(vals[cols['hours']] if cols['hours'] < len(vals) else None)
+                sys_val    = vals[cols.get('system', -1)] if cols.get('system', -1) >= 0 and cols.get('system', -1) < len(vals) else ''
+                parent_sys = _infer_system(comp_name, sys_val)
+                
+                rows.append({
+                    'Component':   comp_name,
+                    'OHDate':      oh_date,
+                    'LegacyHours': hours,
+                    'System':      parent_sys,
+                })
+            
+            if rows:
+                return pd.DataFrame(rows), None
+        
+        return None, f"No sheet in '{file_name}' contained a valid component + overhaul date structure."
+    
     except Exception as e:
-        st.error(f"🚨 Pipeline Execution Halted: {str(e)}")
-        st.info("The Omni-Parser isolated a fatal anomaly. File structures are completely devoid of expected data.")
+        return None, f"PMS parse error in '{file_name}': {str(e)}"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MASTER TIMELINE — stitch N log DataFrames, dedup by date, sort
+# ═══════════════════════════════════════════════════════════════════════════════
+def build_timeline(log_dfs):
+    combined = pd.concat(log_dfs, ignore_index=True)
+    combined['DateKey'] = combined['Date'].dt.strftime('%Y-%m-%d')
+    combined = combined.sort_values('Date')
+    combined = combined.drop_duplicates(subset='DateKey', keep='last').reset_index(drop=True)
+    return combined.drop(columns='DateKey')
+
+def detect_gaps(timeline_df):
+    gaps = []
+    dates = timeline_df['Date'].sort_values().reset_index(drop=True)
+    for i in range(1, len(dates)):
+        diff = (dates.iloc[i] - dates.iloc[i-1]).days
+        if diff > 1:
+            gaps.append({'From': dates.iloc[i-1], 'To': dates.iloc[i], 'Missing Days': diff - 1})
+    return gaps
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHYSICS VIOLATIONS — hours > 24 or < 0 in any system
+# ═══════════════════════════════════════════════════════════════════════════════
+def detect_physics_violations(timeline_df):
+    violations = []
+    sys_cols = [('ME_Hours','MAIN ENGINE'), ('DG1_Hours','DG1'), ('DG2_Hours','DG2'), ('DG3_Hours','DG3')]
+    for col, label in sys_cols:
+        if col not in timeline_df.columns: continue
+        bad = timeline_df[(timeline_df[col] > 24) | (timeline_df[col] < 0)]
+        for _, r in bad.iterrows():
+            h = r[col]
+            violations.append({
+                'Date':   r['Date'].strftime('%d %b %Y'),
+                'System': label,
+                'Hours':  round(h, 2),
+                'Reason': f"Exceeds 24h max" if h > 24 else "Negative hours"
+            })
+    return pd.DataFrame(violations) if violations else pd.DataFrame(columns=['Date','System','Hours','Reason'])
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DISCREPANCY ENGINE
+# ═══════════════════════════════════════════════════════════════════════════════
+def _col_for_system(sys):
+    return {'MAIN_ENGINE':'ME_Hours','DG1':'DG1_Hours','DG2':'DG2_Hours','DG3':'DG3_Hours'}.get(sys,'ME_Hours')
+
+def calculate_discrepancies(pms_df, timeline_df):
+    results = []
+    timeline_start = timeline_df['Date'].min() if not timeline_df.empty else pd.NaT
+    
+    for _, comp in pms_df.iterrows():
+        oh_date = comp['OHDate']
+        col     = _col_for_system(comp['System'])
+        
+        mask    = timeline_df['Date'] >= oh_date
+        subset  = timeline_df.loc[mask, col] if col in timeline_df.columns else pd.Series([], dtype=float)
+        verified = round(subset.sum(), 1) if not subset.empty else 0.0
+        legacy   = comp['LegacyHours']
+        delta    = round(verified - legacy, 1)
+        
+        # Confidence
+        conf, note = 'HIGH', ''
+        if pd.isna(timeline_start) or timeline_start > oh_date:
+            gap = int((timeline_start - oh_date).days) if pd.notna(timeline_start) else 0
+            conf = 'LOW' if gap > 30 else 'MEDIUM'
+            note = f"Log data starts {gap}d after overhaul"
+        elif detect_gaps(timeline_df[timeline_df['Date'] >= oh_date]):
+            conf = 'MEDIUM'
+            note = "Gaps in timeline after overhaul date"
+        
+        results.append({
+            'Component':      comp['Component'],
+            'System':         comp['System'].replace('_',' '),
+            'Overhaul Date':  oh_date.strftime('%d %b %Y'),
+            'Legacy (h)':     legacy,
+            'Verified (h)':   verified,
+            'Delta (h)':      delta,
+            'Confidence':     conf,
+            'Status':         'VERIFIED' if abs(delta) <= 0.5 else 'DRIFT DETECTED',
+            'Note':           note,
+        })
+    
+    return pd.DataFrame(results)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DIGITAL SEAL — SHA-256 of canonical result JSON
+# ═══════════════════════════════════════════════════════════════════════════════
+def compute_seal(results_df):
+    payload = results_df[['Component','Legacy (h)','Verified (h)','Delta (h)','Status']].to_json(orient='records')
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FRONTEND
+# ═══════════════════════════════════════════════════════════════════════════════
+col1, col2 = st.columns(2)
+with col1:
+    st.markdown("<div style='font-size:0.75rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px'>① PMS BASELINE (TEC-001)</div>", unsafe_allow_html=True)
+    pms_file = st.file_uploader("Upload TEC-001 Master Sheet", type=["xlsx","xls"], key="pms", label_visibility="collapsed")
+
+with col2:
+    st.markdown("<div style='font-size:0.75rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px'>② OPERATING HOURS LOGS (multi-select)</div>", unsafe_allow_html=True)
+    log_files = st.file_uploader("Upload Log Files", type=["xlsx","xls","csv","txt"], accept_multiple_files=True, key="logs", label_visibility="collapsed")
+
+if not pms_file and not log_files:
+    st.info("Upload your PMS baseline (TEC-001) and one or more monthly running-hours log files to begin the forensic audit.")
+    st.stop()
+
+if pms_file is None:
+    st.warning("Waiting for PMS file.")
+    st.stop()
+
+if not log_files:
+    st.warning("Waiting for at least one log file.")
+    st.stop()
+
+# Parse PMS
+with st.spinner("Parsing PMS baseline…"):
+    pms_df, pms_err = parse_pms_file(pms_file.getvalue(), pms_file.name)
+
+if pms_err or pms_df is None or pms_df.empty:
+    st.error(f"❌ PMS Parse Failed: {pms_err or 'No data extracted.'}")
+    st.stop()
+
+st.success(f"✓ PMS: {len(pms_df)} components extracted from **{pms_file.name}**")
+
+# Parse all log files
+all_log_dfs, failed = [], []
+for f in log_files:
+    with st.spinner(f"Parsing {f.name}…"):
+        df, err = parse_log_file(f.getvalue(), f.name)
+    if err or df is None or df.empty:
+        failed.append(f"{f.name}: {err or 'No data extracted'}")
+    else:
+        all_log_dfs.append(df)
+        st.success(f"✓ Log: **{f.name}** — {len(df)} daily entries")
+
+if failed:
+    st.warning("⚠️ Skipped files: " + " | ".join(failed))
+
+if not all_log_dfs:
+    st.error("❌ No valid log data could be extracted. Verify file formats.")
+    st.stop()
+
+# Build timeline
+timeline_df = build_timeline(all_log_dfs)
+gaps        = detect_gaps(timeline_df)
+violations  = detect_physics_violations(timeline_df)
+results_df  = calculate_discrepancies(pms_df, timeline_df)
+seal        = compute_seal(results_df)
+
+drift_count = len(results_df[results_df['Status'] == 'DRIFT DETECTED'])
+viol_count  = len(violations)
+
+# ── KPI Cards ──────────────────────────────────────────────────────────────────
+st.markdown("<br>", unsafe_allow_html=True)
+kpi_html = f"""
+<div class="kpi-grid">
+  <div class="kpi-card green">
+    <div class="kpi-label">Components Audited</div>
+    <div class="kpi-val">{len(results_df)}</div>
+    <div class="kpi-sub">Extracted from PMS baseline</div>
+  </div>
+  <div class="kpi-card {'red' if drift_count > 0 else 'green'}">
+    <div class="kpi-label">Drift Anomalies</div>
+    <div class="kpi-val" style="color:{'#ef4444' if drift_count > 0 else '#10b981'}">{drift_count}</div>
+    <div class="kpi-sub">Hours do not match legacy claim</div>
+  </div>
+  <div class="kpi-card violet">
+    <div class="kpi-label">Days in Timeline</div>
+    <div class="kpi-val">{len(timeline_df)}</div>
+    <div class="kpi-sub">{timeline_df['Date'].min().strftime('%d %b %Y')} → {timeline_df['Date'].max().strftime('%d %b %Y')}</div>
+  </div>
+  <div class="kpi-card {'amber' if viol_count > 0 else 'green'}">
+    <div class="kpi-label">Physics Violations</div>
+    <div class="kpi-val" style="color:{'#f59e0b' if viol_count > 0 else '#10b981'}">{viol_count}</div>
+    <div class="kpi-sub">Hours &gt; 24h or &lt; 0 in any system</div>
+  </div>
+  <div class="kpi-card {'amber' if gaps else 'green'}">
+    <div class="kpi-label">Timeline Gaps</div>
+    <div class="kpi-val">{len(gaps)}</div>
+    <div class="kpi-sub">{sum(g['Missing Days'] for g in gaps)} missing day(s) total</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Log Files Merged</div>
+    <div class="kpi-val">{len(all_log_dfs)}</div>
+    <div class="kpi-sub">Deduplicated & stitched</div>
+  </div>
+</div>
+"""
+st.markdown(kpi_html, unsafe_allow_html=True)
+
+# ── Digital Seal ───────────────────────────────────────────────────────────────
+st.markdown(f'<div class="seal-box">🔐 SHA-256 INTEGRITY SEAL: {seal}</div>', unsafe_allow_html=True)
+
+# ── Tabs ───────────────────────────────────────────────────────────────────────
+t1, t2, t3, t4 = st.tabs(["📑 FORENSIC RECONCILIATION", "⚠️ PHYSICS VIOLATIONS", "📅 TIMELINE", "🔍 RAW TIMELINE DATA"])
+
+with t1:
+    st.markdown("**[START ROB] + [BUNKERS] − [END ROB] = [PHYSICAL BURN]**" if False else "**Verified Hours** are summed from the master timeline from each component's last overhaul date onwards.")
+
+    def _style_row(row):
+        if row['Status'] == 'DRIFT DETECTED': return ['background-color: #fef2f2; color: #991b1b'] * len(row)
+        if row['Confidence'] == 'LOW':        return ['background-color: #fffbeb; color: #92400e'] * len(row)
+        if row['Confidence'] == 'MEDIUM':     return ['background-color: #fefce8; color: #854d0e'] * len(row)
+        return ['color: #065f46'] * len(row)
+
+    st.dataframe(
+        results_df.style.apply(_style_row, axis=1),
+        use_container_width=True, hide_index=True, height=500,
+        column_config={
+            'Legacy (h)':   st.column_config.NumberColumn(format='%.1f'),
+            'Verified (h)': st.column_config.NumberColumn(format='%.1f'),
+            'Delta (h)':    st.column_config.NumberColumn(format='%.1f'),
+        }
+    )
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as wr:
+        results_df.to_excel(wr, index=False, sheet_name='Audit Results')
+        if not violations.empty:
+            violations.to_excel(wr, index=False, sheet_name='Physics Violations')
+        pd.DataFrame([{'Seal': seal, 'Generated': datetime.now().isoformat(), 'Components': len(results_df)}]).to_excel(wr, index=False, sheet_name='Digital Seal')
+    buf.seek(0)
+    st.download_button("⬇️ Download Audit Workbook (.xlsx)", data=buf, file_name=f"VRS_Audit_{datetime.now().strftime('%Y%m%d')}.xlsx", mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+with t2:
+    if violations.empty:
+        st.success("✅ Zero physics violations. All daily entries are within the 0–24h physical bounds.")
+    else:
+        st.error(f"⚠️ {len(violations)} impossible values detected. These are **included** in the audit arithmetic — not discarded.")
+        st.dataframe(violations, use_container_width=True, hide_index=True)
+
+with t3:
+    if gaps:
+        gap_df = pd.DataFrame(gaps)
+        gap_df['From'] = gap_df['From'].dt.strftime('%d %b %Y')
+        gap_df['To']   = gap_df['To'].dt.strftime('%d %b %Y')
+        st.warning(f"⚠️ {len(gaps)} chronological gap(s) found — {sum(g['Missing Days'] for g in gaps)} total missing days.")
+        st.dataframe(gap_df, use_container_width=True, hide_index=True)
+    else:
+        st.success("✅ No chronological gaps in the master timeline.")
+
+with t4:
+    st.caption(f"Master timeline: {len(timeline_df)} days · {len(all_log_dfs)} source file(s) merged")
+    st.dataframe(
+        timeline_df.rename(columns={'Date':'Date','ME_Hours':'ME (h)','DG1_Hours':'DG1 (h)','DG2_Hours':'DG2 (h)','DG3_Hours':'DG3 (h)'}),
+        use_container_width=True, hide_index=True, height=400
+    )
