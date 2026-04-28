@@ -5,8 +5,6 @@ import io
 import hashlib
 from datetime import datetime
 import warnings
-
-# Import the Word Document parser
 from docx import Document
 
 warnings.filterwarnings("ignore")
@@ -43,7 +41,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2. UNIVERSAL SEMANTIC ENGINE (Excel + Word Document Support)
+# 2. UNIVERSAL SEMANTIC ENGINE (Incorporating POSEIDON Brute-Force Fallback)
 # ═══════════════════════════════════════════════════════════════════════════════
 def extract_semantic_timeline(df_raw):
     """Core logic to hunt for Date and Main Engine hours inside any dataframe matrix."""
@@ -69,30 +67,41 @@ def extract_semantic_timeline(df_raw):
 
 @st.cache_data(show_spinner=False)
 def parse_multiple_logs(log_files):
-    """Parses an unlimited array of Word (.docx) or Excel (.xlsx) files."""
     all_logs = []
     
     for f in log_files:
         file_name = f.name.lower()
         file_bytes = f.getvalue()
         
-        if file_name.endswith('.docx'):
-            # --- WORD DOCUMENT PARSER ---
-            doc = Document(io.BytesIO(file_bytes))
-            for table in doc.tables:
-                # Convert Word Table into a 2D Array, then to a Pandas DataFrame
-                data = [[cell.text.strip() for cell in row.cells] for row in table.rows]
-                if data:
-                    df_raw = pd.DataFrame(data)
-                    clean_df = extract_semantic_timeline(df_raw)
-                    if clean_df is not None and not clean_df.empty:
-                        all_logs.append(clean_df)
-        else:
-            # --- EXCEL SPREADSHEET PARSER ---
-            df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl', dtype=str)
-            clean_df = extract_semantic_timeline(df_raw)
-            if clean_df is not None and not clean_df.empty:
-                all_logs.append(clean_df)
+        try:
+            if file_name.endswith('.docx'):
+                doc = Document(io.BytesIO(file_bytes))
+                for table in doc.tables:
+                    data = [[cell.text.strip() for cell in row.cells] for row in table.rows]
+                    if data:
+                        df_raw = pd.DataFrame(data)
+                        clean_df = extract_semantic_timeline(df_raw)
+                        if clean_df is not None and not clean_df.empty:
+                            all_logs.append(clean_df)
+                            
+            elif file_name.endswith('.xlsx') or file_name.endswith('.xls'):
+                df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl', dtype=str)
+                clean_df = extract_semantic_timeline(df_raw)
+                if clean_df is not None and not clean_df.empty:
+                    all_logs.append(clean_df)
+                    
+            else:
+                # 🟢 THE POSEIDON BRUTE-FORCE FALLBACK 
+                # This cracks open fake .doc files that are actually raw text/CSV
+                csv_str = file_bytes.decode('latin-1', errors='replace')
+                df_raw = pd.read_csv(io.StringIO(csv_str), header=None, on_bad_lines='skip', dtype=str)
+                clean_df = extract_semantic_timeline(df_raw)
+                if clean_df is not None and not clean_df.empty:
+                    all_logs.append(clean_df)
+
+        except Exception as file_e:
+            st.error(f"Failed to parse file {f.name}: {str(file_e)}")
+            continue
             
     if not all_logs:
         raise ValueError("Semantic Extraction Failed: Could not locate chronological timeline tables in the uploaded files.")
@@ -103,7 +112,6 @@ def parse_multiple_logs(log_files):
 
 @st.cache_data(show_spinner=False)
 def parse_single_pms(file_bytes):
-    """Hunts for the Component, Overhaul Date, and Claimed Hours in the master PMS."""
     df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl', dtype=str)
     header_idx, comp_idx, date_idx, hrs_idx = -1, -1, -1, -1
 
@@ -145,9 +153,9 @@ with st.container():
         st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>1. TARGET BASELINE (PMS)</div>", unsafe_allow_html=True)
         pms_file = st.file_uploader("Upload TEC-001 Master Sheet", type=["xlsx", "xls"], key="pms")
     with col2:
-        st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>2. CHRONOLOGICAL LOGS (WORD OR EXCEL)</div>", unsafe_allow_html=True)
-        # 🟢 UPDATED: Now strictly accepts .docx files as well
-        logs_files = st.file_uploader("Upload Monthly Log(s). Multi-select enabled.", type=["xlsx", "xls", "docx"], accept_multiple_files=True, key="logs")
+        st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>2. CHRONOLOGICAL LOGS (WORD/EXCEL/CSV)</div>", unsafe_allow_html=True)
+        # 🟢 UPDATED: Now accepts ".doc" and ".csv" to allow the POSEIDON brute-force logic to work
+        logs_files = st.file_uploader("Upload Monthly Log(s). Multi-select enabled.", type=["xlsx", "xls", "docx", "doc", "csv"], accept_multiple_files=True, key="logs")
 
 if pms_file and logs_files:
     try:
