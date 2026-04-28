@@ -1,17 +1,31 @@
-// Global interface definitions for the entire application
+// ═══════════════════════════════════════════════════════════════════════════
+// Global Types — import from here as: import type { ... } from '../types/vessel'
+// ═══════════════════════════════════════════════════════════════════════════
+
+export type SystemLabel = 'MAIN_ENGINE' | 'DG1' | 'DG2' | 'DG3';
+
 export interface PhysicsViolation {
   date: Date;
-  system: "MAIN_ENGINE" | "DG1" | "DG2" | "DG3";
+  system: SystemLabel;
   loggedHours: number;
   maxAllowed: number;
   reason: string;
 }
 
-export interface AuditTrailEntry {
-  timestamp: string;
-  component: string;
-  action: string;
-  oldValue: number | string;
-  newValue: number | string;
-  delta: number;
+export interface TimelineGap {
+  from: Date;
+  to: Date;
+  missingDays: number;
+}
+
+export interface AuditSummary {
+  totalComponents: number;
+  verifiedComponents: number;
+  driftComponents: number;
+  totalDaysCovered: number;
+  earliestLog: Date | null;
+  latestLog: Date | null;
+  timelineGaps: TimelineGap[];
+  physicsViolationCount: number;
+  sourceFileCount: number;
 }
