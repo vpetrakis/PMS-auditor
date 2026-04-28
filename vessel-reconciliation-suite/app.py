@@ -2,10 +2,16 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import io
+import re
 import hashlib
 from datetime import datetime
 import warnings
-from docx import Document
+
+# Import Document parser safely
+try:
+    from docx import Document
+except ImportError:
+    pass
 
 warnings.filterwarnings("ignore")
 
@@ -41,11 +47,15 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2. UNIVERSAL SEMANTIC ENGINE (Incorporating POSEIDON Brute-Force Fallback)
+# 2. THE OMNI-PARSER (100% Immutable Extraction Engine)
 # ═══════════════════════════════════════════════════════════════════════════════
 def extract_semantic_timeline(df_raw):
-    """Core logic to hunt for Date and Main Engine hours inside any dataframe matrix."""
+    """Hunts for Date and Main Engine vectors inside any grid structure."""
+    if df_raw is None or df_raw.empty: return None
     header_idx, date_idx, me_idx = -1, -1, -1
+    
+    # Standardize to string
+    df_raw = df_raw.astype(str)
     
     for i in range(min(50, len(df_raw))):
         vals = [str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)]
@@ -61,54 +71,84 @@ def extract_semantic_timeline(df_raw):
         df = df_raw.iloc[header_idx + 1:].copy()
         clean_df = pd.DataFrame()
         clean_df['Date'] = pd.to_datetime(df.iloc[:, date_idx], errors='coerce')
-        clean_df['ME_Hours'] = pd.to_numeric(df.iloc[:, me_idx], errors='coerce').fillna(0.0)
+        # Extract only the numbers, avoiding string corruption
+        clean_df['ME_Hours'] = df.iloc[:, me_idx].apply(lambda x: re.sub(r'[^\d.]', '', str(x)))
+        clean_df['ME_Hours'] = pd.to_numeric(clean_df['ME_Hours'], errors='coerce').fillna(0.0)
         return clean_df.dropna(subset=['Date'])
     return None
+
+def omni_crack_file(file_bytes, file_name):
+    """The 5-Chamber Decryption sequence to bypass Buffer Overflows."""
+    
+    # Chamber 1: Modern Excel Engine
+    try:
+        df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl', dtype=str)
+        res = extract_semantic_timeline(df_raw)
+        if res is not None and not res.empty: return res
+    except: pass
+
+    # Chamber 2: Legacy Excel Engine
+    try:
+        df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='xlrd', dtype=str)
+        res = extract_semantic_timeline(df_raw)
+        if res is not None and not res.empty: return res
+    except: pass
+
+    # Chamber 3: ERP HTML Table Extraction
+    try:
+        tables = pd.read_html(io.BytesIO(file_bytes))
+        for df_raw in tables:
+            res = extract_semantic_timeline(pd.DataFrame(df_raw))
+            if res is not None and not res.empty: return res
+    except: pass
+
+    # Chamber 4: Word Document Tables (.docx)
+    try:
+        doc = Document(io.BytesIO(file_bytes))
+        data = []
+        for table in doc.tables:
+            data.extend([[cell.text.strip() for cell in row.cells] for row in table.rows])
+        if data:
+            res = extract_semantic_timeline(pd.DataFrame(data))
+            if res is not None and not res.empty: return res
+    except: pass
+
+    # Chamber 5: Python CSV Engine & Regex Grid (Immune to C-engine Buffer Overflows)
+    try:
+        raw_text = file_bytes.decode('latin-1', errors='ignore')
+        # Use 'python' engine instead of C to prevent fatal buffer crashes
+        df_raw = pd.read_csv(io.StringIO(raw_text), header=None, engine='python', on_bad_lines='skip', sep=None, dtype=str)
+        res = extract_semantic_timeline(df_raw)
+        if res is not None and not res.empty: return res
+        
+        # Synthetic Grid Reconstruction
+        lines = raw_text.split('\n')
+        data = [re.split(r'\t|\s{2,}', line.strip()) for line in lines if line.strip()]
+        if data:
+            res = extract_semantic_timeline(pd.DataFrame(data))
+            if res is not None and not res.empty: return res
+    except: pass
+
+    return None # All chambers failed
 
 @st.cache_data(show_spinner=False)
 def parse_multiple_logs(log_files):
     all_logs = []
+    failed_files = []
     
     for f in log_files:
-        file_name = f.name.lower()
-        file_bytes = f.getvalue()
-        
-        try:
-            if file_name.endswith('.docx'):
-                doc = Document(io.BytesIO(file_bytes))
-                for table in doc.tables:
-                    data = [[cell.text.strip() for cell in row.cells] for row in table.rows]
-                    if data:
-                        df_raw = pd.DataFrame(data)
-                        clean_df = extract_semantic_timeline(df_raw)
-                        if clean_df is not None and not clean_df.empty:
-                            all_logs.append(clean_df)
-                            
-            elif file_name.endswith('.xlsx') or file_name.endswith('.xls'):
-                df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl', dtype=str)
-                clean_df = extract_semantic_timeline(df_raw)
-                if clean_df is not None and not clean_df.empty:
-                    all_logs.append(clean_df)
-                    
-            else:
-                # 🟢 THE POSEIDON BRUTE-FORCE FALLBACK 
-                # This cracks open fake .doc files that are actually raw text/CSV
-                csv_str = file_bytes.decode('latin-1', errors='replace')
-                df_raw = pd.read_csv(io.StringIO(csv_str), header=None, on_bad_lines='skip', dtype=str)
-                clean_df = extract_semantic_timeline(df_raw)
-                if clean_df is not None and not clean_df.empty:
-                    all_logs.append(clean_df)
-
-        except Exception as file_e:
-            st.error(f"Failed to parse file {f.name}: {str(file_e)}")
-            continue
+        clean_df = omni_crack_file(f.getvalue(), f.name)
+        if clean_df is not None and not clean_df.empty:
+            all_logs.append(clean_df)
+        else:
+            failed_files.append(f.name)
             
     if not all_logs:
-        raise ValueError("Semantic Extraction Failed: Could not locate chronological timeline tables in the uploaded files.")
+        raise ValueError(f"Complete Data Void. System could not extract semantic grids from: {', '.join(failed_files)}")
         
     master_timeline = pd.concat(all_logs, ignore_index=True)
     master_timeline = master_timeline.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').reset_index(drop=True)
-    return master_timeline
+    return master_timeline, failed_files
 
 @st.cache_data(show_spinner=False)
 def parse_single_pms(file_bytes):
@@ -134,7 +174,7 @@ def parse_single_pms(file_bytes):
     clean_df['Last_Overhaul'] = pd.to_datetime(df.iloc[:, date_idx], errors='coerce')
     clean_df['Claimed_Hours'] = pd.to_numeric(df.iloc[:, hrs_idx], errors='coerce').fillna(0)
     
-    clean_df = clean_df[(clean_df['Component'] != 'nan') & (clean_df['Component'] != 'None')]
+    clean_df = clean_df[(clean_df['Component'] != 'nan') & (clean_df['Component'] != 'None') & (clean_df['Component'] != '')]
     return clean_df.dropna(subset=['Last_Overhaul']).reset_index(drop=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -153,17 +193,20 @@ with st.container():
         st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>1. TARGET BASELINE (PMS)</div>", unsafe_allow_html=True)
         pms_file = st.file_uploader("Upload TEC-001 Master Sheet", type=["xlsx", "xls"], key="pms")
     with col2:
-        st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>2. CHRONOLOGICAL LOGS (WORD/EXCEL/CSV)</div>", unsafe_allow_html=True)
-        # 🟢 UPDATED: Now accepts ".doc" and ".csv" to allow the POSEIDON brute-force logic to work
-        logs_files = st.file_uploader("Upload Monthly Log(s). Multi-select enabled.", type=["xlsx", "xls", "docx", "doc", "csv"], accept_multiple_files=True, key="logs")
+        st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>2. CHRONOLOGICAL LOGS</div>", unsafe_allow_html=True)
+        # Accepts any type of text/grid file securely
+        logs_files = st.file_uploader("Upload Monthly Log(s). Multi-select enabled.", type=["xlsx", "xls", "docx", "doc", "csv", "txt", "html", "rtf"], accept_multiple_files=True, key="logs")
 
 if pms_file and logs_files:
     try:
-        with st.spinner("Initializing Enterprise Semantic Engine..."):
+        with st.spinner("Initializing Enterprise Omni-Parser..."):
             
-            daily_df = parse_multiple_logs(logs_files)
+            daily_df, failed_files = parse_multiple_logs(logs_files)
             pms_df = parse_single_pms(pms_file.getvalue())
             total_days_stitched = len(daily_df)
+
+            if failed_files:
+                st.warning(f"⚠️ Notice: The system skipped unreadable or heavily corrupted files: {', '.join(failed_files)}")
 
             physics_violations = []
             for _, row in daily_df.iterrows():
@@ -256,8 +299,8 @@ if pms_file and logs_files:
             )
             
         else:
-            st.error("Semantic Extraction Failed: No valid overhaul dates found in the PMS file.")
+            st.error("Extraction Failed: No valid overhaul dates found in the PMS file.")
 
     except Exception as e:
-        st.error(f"🚨 Pipeline Crash Prevented: {str(e)}")
-        st.info("The software aborted to protect data integrity. Ensure you uploaded the correct formats.")
+        st.error(f"🚨 Pipeline Execution Halted: {str(e)}")
+        st.info("The Omni-Parser isolated a fatal anomaly. File structures are completely devoid of expected data.")
