@@ -7,7 +7,6 @@ import hashlib
 from datetime import datetime
 import warnings
 
-# Import Document parser safely
 try:
     from docx import Document
 except ImportError:
@@ -16,7 +15,7 @@ except ImportError:
 warnings.filterwarnings("ignore")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 1. ENTERPRISE PAGE CONFIGURATION & PREMIUM CSS
+# 1. ENTERPRISE PAGE CONFIGURATION & PREMIUM CSS (TITAN AESTHETIC)
 # ═══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(page_title="Vessel Reconciliation Suite", page_icon="⚓", layout="wide", initial_sidebar_state="collapsed")
 
@@ -47,14 +46,13 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2. THE OMNI-PARSER (100% Immutable Extraction Engine)
+# 2. OMNI-PARSER (With C-Engine Buffer Overflow Failsafes)
 # ═══════════════════════════════════════════════════════════════════════════════
 def extract_semantic_timeline(df_raw):
     """Hunts for Date and Main Engine vectors inside any grid structure."""
     if df_raw is None or df_raw.empty: return None
     header_idx, date_idx, me_idx = -1, -1, -1
     
-    # Standardize to string
     df_raw = df_raw.astype(str)
     
     for i in range(min(50, len(df_raw))):
@@ -71,65 +69,66 @@ def extract_semantic_timeline(df_raw):
         df = df_raw.iloc[header_idx + 1:].copy()
         clean_df = pd.DataFrame()
         clean_df['Date'] = pd.to_datetime(df.iloc[:, date_idx], errors='coerce')
-        # Extract only the numbers, avoiding string corruption
+        # Extract purely numbers and decimals, stripping toxic strings
         clean_df['ME_Hours'] = df.iloc[:, me_idx].apply(lambda x: re.sub(r'[^\d.]', '', str(x)))
         clean_df['ME_Hours'] = pd.to_numeric(clean_df['ME_Hours'], errors='coerce').fillna(0.0)
         return clean_df.dropna(subset=['Date'])
     return None
 
-def omni_crack_file(file_bytes, file_name):
-    """The 5-Chamber Decryption sequence to bypass Buffer Overflows."""
+def pure_python_grid_extractor(file_bytes):
+    """Bypasses Pandas entirely to prevent C-engine Buffer Overflows on legacy .doc files."""
+    # 1. Decode safely, ignoring toxic bytes
+    raw_text = file_bytes.decode('latin-1', errors='ignore')
     
-    # Chamber 1: Modern Excel Engine
-    try:
-        df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl', dtype=str)
-        res = extract_semantic_timeline(df_raw)
-        if res is not None and not res.empty: return res
-    except: pass
+    # 2. Strip NULL bytes (\x00) which are the #1 cause of Pandas buffer overflows
+    clean_text = raw_text.replace('\x00', '')
+    
+    # 3. HTML Table Bypass (Many legacy maritime .doc files are just hidden HTML)
+    if '<table' in clean_text.lower():
+        try:
+            tables = pd.read_html(io.StringIO(clean_text))
+            for t in tables:
+                res = extract_semantic_timeline(t)
+                if res is not None and not res.empty: return res
+        except: pass
 
-    # Chamber 2: Legacy Excel Engine
-    try:
-        df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='xlrd', dtype=str)
-        res = extract_semantic_timeline(df_raw)
-        if res is not None and not res.empty: return res
-    except: pass
-
-    # Chamber 3: ERP HTML Table Extraction
-    try:
-        tables = pd.read_html(io.BytesIO(file_bytes))
-        for df_raw in tables:
-            res = extract_semantic_timeline(pd.DataFrame(df_raw))
-            if res is not None and not res.empty: return res
-    except: pass
-
-    # Chamber 4: Word Document Tables (.docx)
-    try:
-        doc = Document(io.BytesIO(file_bytes))
-        data = []
-        for table in doc.tables:
-            data.extend([[cell.text.strip() for cell in row.cells] for row in table.rows])
-        if data:
-            res = extract_semantic_timeline(pd.DataFrame(data))
-            if res is not None and not res.empty: return res
-    except: pass
-
-    # Chamber 5: Python CSV Engine & Regex Grid (Immune to C-engine Buffer Overflows)
-    try:
-        raw_text = file_bytes.decode('latin-1', errors='ignore')
-        # Use 'python' engine instead of C to prevent fatal buffer crashes
-        df_raw = pd.read_csv(io.StringIO(raw_text), header=None, engine='python', on_bad_lines='skip', sep=None, dtype=str)
-        res = extract_semantic_timeline(df_raw)
-        if res is not None and not res.empty: return res
+    # 4. Pure Regex/String Split Grid Reconstruction (Zero C-Engine Involvement)
+    lines = clean_text.splitlines()
+    synthetic_grid = []
+    for line in lines:
+        # Split by tabs or 2+ consecutive spaces
+        row = re.split(r'\t|\s{2,}', line.strip())
+        if len(row) > 1:
+            synthetic_grid.append(row)
+            
+    if synthetic_grid:
+        df_raw = pd.DataFrame(synthetic_grid)
+        return extract_semantic_timeline(df_raw)
         
-        # Synthetic Grid Reconstruction
-        lines = raw_text.split('\n')
-        data = [re.split(r'\t|\s{2,}', line.strip()) for line in lines if line.strip()]
-        if data:
-            res = extract_semantic_timeline(pd.DataFrame(data))
-            if res is not None and not res.empty: return res
-    except: pass
+    return None
 
-    return None # All chambers failed
+def omni_crack_file(file_bytes, file_name):
+    """The Sequential Decryption Chamber."""
+    # 1. Standard Modern Excel
+    if file_name.endswith(('.xlsx', '.xls')):
+        try:
+            df = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl' if file_name.endswith('.xlsx') else 'xlrd', dtype=str)
+            res = extract_semantic_timeline(df)
+            if res is not None: return res
+        except: pass
+
+    # 2. True Word Document
+    if file_name.endswith('.docx'):
+        try:
+            doc = Document(io.BytesIO(file_bytes))
+            data = [[cell.text.strip() for cell in row.cells] for table in doc.tables for row in table.rows]
+            if data:
+                res = extract_semantic_timeline(pd.DataFrame(data))
+                if res is not None: return res
+        except: pass
+
+    # 3. The Ultimate Pure-Python Failsafe (Handles the .doc crash)
+    return pure_python_grid_extractor(file_bytes)
 
 @st.cache_data(show_spinner=False)
 def parse_multiple_logs(log_files):
@@ -137,14 +136,14 @@ def parse_multiple_logs(log_files):
     failed_files = []
     
     for f in log_files:
-        clean_df = omni_crack_file(f.getvalue(), f.name)
+        clean_df = omni_crack_file(f.getvalue(), f.name.lower())
         if clean_df is not None and not clean_df.empty:
             all_logs.append(clean_df)
         else:
             failed_files.append(f.name)
             
     if not all_logs:
-        raise ValueError(f"Complete Data Void. System could not extract semantic grids from: {', '.join(failed_files)}")
+        raise ValueError(f"Complete Data Void. System could not extract semantic grids from: {', '.join(failed_files)}. Verify the files are not scanned pictures.")
         
     master_timeline = pd.concat(all_logs, ignore_index=True)
     master_timeline = master_timeline.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').reset_index(drop=True)
@@ -194,8 +193,7 @@ with st.container():
         pms_file = st.file_uploader("Upload TEC-001 Master Sheet", type=["xlsx", "xls"], key="pms")
     with col2:
         st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>2. CHRONOLOGICAL LOGS</div>", unsafe_allow_html=True)
-        # Accepts any type of text/grid file securely
-        logs_files = st.file_uploader("Upload Monthly Log(s). Multi-select enabled.", type=["xlsx", "xls", "docx", "doc", "csv", "txt", "html", "rtf"], accept_multiple_files=True, key="logs")
+        logs_files = st.file_uploader("Upload Monthly Log(s). Multi-select enabled.", type=["xlsx", "xls", "docx", "doc", "csv", "txt", "rtf", "html"], accept_multiple_files=True, key="logs")
 
 if pms_file and logs_files:
     try:
@@ -206,7 +204,7 @@ if pms_file and logs_files:
             total_days_stitched = len(daily_df)
 
             if failed_files:
-                st.warning(f"⚠️ Notice: The system skipped unreadable or heavily corrupted files: {', '.join(failed_files)}")
+                st.warning(f"⚠️ Notice: The system skipped unreadable formats: {', '.join(failed_files)}")
 
             physics_violations = []
             for _, row in daily_df.iterrows():
