@@ -1,457 +1,419 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // VESSEL RECONCILIATION SUITE — Omni-Parser
 //
-// Architecture:
+// ARCHITECTURE — identical to Poseidon Titan's proven approach:
+//   1. Read the full sheet as a raw grid (no assumed headers)
+//   2. Scan for the header row by looking for sentinel keywords
+//   3. Forward-fill the top header row (handles merged cells)
+//   4. Combine top + bottom header into a semantic column map
+//   5. Extract data rows below the header pair
+//
+// Two public functions:
 //   parsePMSFile(file)  → ComponentData[]
 //   parseLogFile(file)  → DailyLog[]
-//
-// Both functions use the same three-stage approach:
-//   Stage 1 — Read workbook with SheetJS (cellDates: true)
-//   Stage 2 — Semantic header detection (scan first 60 rows)
-//   Stage 3 — Row-by-row extraction with per-cell error isolation
-//
-// Design principles:
-//   - A bad row is SKIPPED, not a fatal error
-//   - Every sheet in the workbook is tried until data is found
-//   - Date serial numbers, Date objects, and string dates are all handled
-//   - Physics violations are NOT rejected here — they are captured downstream
 // ═══════════════════════════════════════════════════════════════════════════
 
 import * as XLSX from 'xlsx';
-import { ComponentSchema, DailyLogSchema } from '../schemas/tec001.schema';
 import type { DailyLog, ComponentData } from '../schemas/tec001.schema';
-import type { SystemLabel } from '../../types/vessel.d';
+import type { SystemLabel } from '../../types/vessel';
+
+// ─── Raw cell value type ──────────────────────────────────────────────────────
+type CV  = string | number | boolean | Date | null | undefined;
+type Row = CV[];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// INTERNAL TYPES
+// SAFE NUMBER — mirrors Poseidon Titan's _sn()
+// Strips any non-numeric characters, returns NaN on garbage.
 // ─────────────────────────────────────────────────────────────────────────────
-
-type CellValue = string | number | boolean | Date | null;
-type Grid      = CellValue[][];
-
-interface ColMap {
-  date?:      number;
-  me?:        number;
-  dg1?:       number;
-  dg2?:       number;
-  dg3?:       number;
-  component?: number;
-  ohDate?:    number;
-  hours?:     number;
-  system?:    number;
+function sn(val: CV): number {
+  if (val === null || val === undefined) return NaN;
+  if (typeof val === 'number') return isNaN(val) ? NaN : val;
+  if (typeof val === 'boolean') return NaN;
+  if (val instanceof Date) return NaN;
+  const s = String(val).trim().toUpperCase();
+  if (['NIL','N/A','NA','XXX','NONE','UNKNOWN','-','X','','NULL','BLANK'].includes(s)) return NaN;
+  const cleaned = s.replace(/[^\d.\-]/g, '');
+  if (!cleaned || cleaned === '.' || cleaned === '-' || cleaned === '-.') return NaN;
+  const n = parseFloat(cleaned);
+  return isNaN(n) ? NaN : n;
 }
 
-interface HeaderMatch {
-  rowIdx: number;
-  colMap: ColMap;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// CELL UTILITIES
-// ─────────────────────────────────────────────────────────────────────────────
-
-function normalise(val: CellValue): string {
-  if (val === null || val === undefined) return '';
-  return String(val).trim().toUpperCase().replace(/\s+/g, ' ');
-}
-
-function contains(cell: string, ...terms: string[]): boolean {
-  return terms.some(t => cell.includes(t));
+function sn0(val: CV): number {
+  const v = sn(val);
+  return isNaN(v) ? 0 : v;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DATE PARSING
+// SAFE DATE — handles: Date objects, XLSX serial numbers,
+//             ISO strings, DD/MM/YYYY, DD MMM YYYY, etc.
 // ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Converts any cell value to a valid Date or null.
- * Handles: Date objects, XLSX serial numbers, ISO strings, DD/MM/YYYY, etc.
- */
-function parseDate(val: CellValue): Date | null {
+function safeDate(val: CV): Date | null {
   if (val === null || val === undefined || val === '') return null;
+  if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
 
-  // Already a Date from SheetJS with cellDates: true
-  if (val instanceof Date) {
-    return isNaN(val.getTime()) ? null : val;
-  }
-
-  // XLSX serial number (number of days since 1900-01-01)
+  // XLSX serial number
   if (typeof val === 'number') {
     try {
-      const parsed = XLSX.SSF.parse_date_code(val);
-      if (parsed) return new Date(parsed.y, parsed.m - 1, parsed.d);
+      const p = XLSX.SSF.parse_date_code(val);
+      if (p) return new Date(p.y, p.m - 1, p.d);
     } catch { /* fall through */ }
     return null;
   }
 
-  const str = String(val).trim();
-  if (!str || str === '-' || str.toLowerCase() === 'n/a') return null;
+  const raw = String(val).trim();
+  if (!raw || ['-','n/a','nil','none','null'].includes(raw.toLowerCase())) return null;
 
-  // Try native Date parse first
-  const d = new Date(str);
-  if (!isNaN(d.getTime())) return d;
+  // Typo correction (mirrors Poseidon: re.sub r'20224' → '2024')
+  const fixed = raw
+    .replace(/20224/g, '2024')
+    .replace(/20023/g, '2023')
+    .replace(/20225/g, '2025');
 
-  // DD/MM/YYYY or DD-MM-YYYY
-  const dmyMatch = str.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
-  if (dmyMatch) {
-    const [, dd, mm, yy] = dmyMatch;
-    const year = yy.length === 2 ? parseInt(yy) + (parseInt(yy) > 50 ? 1900 : 2000) : parseInt(yy);
-    const candidate = new Date(year, parseInt(mm) - 1, parseInt(dd));
-    if (!isNaN(candidate.getTime())) return candidate;
+  // "15 Jan 2024" or "15 Jan. 2024"
+  const dmyText = fixed.match(/^(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{4})$/);
+  if (dmyText) {
+    const d = new Date(`${dmyText[2]} ${dmyText[1]}, ${dmyText[3]}`);
+    if (!isNaN(d.getTime())) return d;
   }
 
-  // MM/DD/YYYY (US format)
-  const mdyMatch = str.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})$/);
-  if (mdyMatch) {
-    const [, mm, dd, yyyy] = mdyMatch;
-    const candidate = new Date(parseInt(yyyy), parseInt(mm) - 1, parseInt(dd));
-    if (!isNaN(candidate.getTime())) return candidate;
+  // Native parse (handles ISO, "Jan 15 2024", etc.)
+  const native = new Date(fixed);
+  if (!isNaN(native.getTime())) return native;
+
+  // DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
+  const dmy = fixed.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+  if (dmy) {
+    const yr = dmy[3].length === 2 ? (parseInt(dmy[3]) > 50 ? 1900 : 2000) + parseInt(dmy[3]) : parseInt(dmy[3]);
+    const d  = new Date(yr, parseInt(dmy[2]) - 1, parseInt(dmy[1]));
+    if (!isNaN(d.getTime())) return d;
   }
 
   return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NUMBER PARSING
+// NORMALISE — uppercase + collapse whitespace
 // ─────────────────────────────────────────────────────────────────────────────
-
-function parseHours(val: CellValue): number {
-  if (val === null || val === undefined || val === '') return 0;
-  if (typeof val === 'number') return isNaN(val) ? 0 : val;
-  const cleaned = String(val).replace(/[^\d.\-]/g, '');
-  const n = parseFloat(cleaned);
-  return isNaN(n) ? 0 : n;
+function norm(v: CV): string {
+  if (v === null || v === undefined) return '';
+  return String(v).trim().toUpperCase().replace(/\s+/g, ' ');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SYSTEM INFERENCE
+// FORWARD-FILL — mirrors Poseidon's pd.Series.ffill()
+// Propagates the last non-empty cell to the right.
+// This is essential for merged-cell header rows.
 // ─────────────────────────────────────────────────────────────────────────────
-
-function inferSystem(componentName: string, systemCellVal?: CellValue): SystemLabel {
-  const name = normalise(componentName);
-  const sys  = normalise(systemCellVal ?? '');
-  const combined = `${name} ${sys}`;
-
-  // Check for DG3 first (most specific)
-  if (contains(combined, 'DG3', 'D/G 3', 'D.G.3', 'AUX 3', 'G/E 3', 'GENERATOR 3', 'GEN 3')) return 'DG3';
-  if (contains(combined, 'DG2', 'D/G 2', 'D.G.2', 'AUX 2', 'G/E 2', 'GENERATOR 2', 'GEN 2')) return 'DG2';
-  if (contains(combined, 'DG1', 'D/G 1', 'D.G.1', 'AUX 1', 'G/E 1', 'GENERATOR 1', 'GEN 1')) return 'DG1';
-
-  // Generic DG without number
-  if (contains(combined, 'DG', 'D/G', 'DIESEL GEN', 'GENERATOR', 'GENSET', 'AUX ENGINE')) {
-    // Could be DG1, can't determine which — mark as MAIN_ENGINE and flag
-    return 'DG1';
-  }
-
-  return 'MAIN_ENGINE';
+function fwdFill(row: CV[]): string[] {
+  let last = '';
+  return row.map(v => {
+    const s = norm(v);
+    if (s) last = s;
+    return last;
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WORKBOOK → GRID
+// SHEET → RAW GRID
+// Reads every cell; Date-formatted cells come back as JS Date objects.
 // ─────────────────────────────────────────────────────────────────────────────
-
-function sheetToGrid(sheet: XLSX.WorkSheet): Grid {
-  if (!sheet['!ref']) return [];
-  const range = XLSX.utils.decode_range(sheet['!ref']);
-  const grid: Grid = [];
+function sheetToGrid(ws: XLSX.WorkSheet): Row[] {
+  if (!ws['!ref']) return [];
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  const grid: Row[] = [];
 
   for (let r = range.s.r; r <= range.e.r; r++) {
-    const row: CellValue[] = [];
+    const row: Row = [];
     for (let c = range.s.c; c <= range.e.c; c++) {
-      const addr = XLSX.utils.encode_cell({ r, c });
-      const cell = sheet[addr];
+      const cell = ws[XLSX.utils.encode_cell({ r, c })];
       if (!cell) { row.push(null); continue; }
 
-      // Prioritise Date objects for date-formatted cells
-      if (cell.t === 'd' && cell.v instanceof Date) {
-        row.push(cell.v);
-      } else if (cell.t === 'n' && typeof cell.z === 'string' && /[\/\-]/.test(cell.z)) {
-        // Serial number with date format
-        row.push(parseDate(cell.v));
-      } else {
-        row.push(cell.v ?? null);
+      if (cell.t === 'd' && cell.v instanceof Date) { row.push(cell.v); continue; }
+      // XLSX serial with date format
+      if (cell.t === 'n' && typeof cell.z === 'string' && /[\/\-mdyMDY]/.test(cell.z)) {
+        const d = safeDate(cell.v);
+        row.push(d ?? cell.v);
+        continue;
       }
+      row.push(cell.v ?? null);
     }
     grid.push(row);
   }
   return grid;
 }
 
-async function readWorkbook(file: File): Promise<XLSX.WorkBook> {
-  return new Promise((resolve, reject) => {
+async function readWB(file: File): Promise<XLSX.WorkBook> {
+  return new Promise((res, rej) => {
     const reader = new FileReader();
     reader.onload  = e => {
-      try {
-        const wb = XLSX.read(e.target?.result as ArrayBuffer, {
-          type:      'array',
-          cellDates: true,
-          cellNF:    true,
-          cellText:  false,
-        });
-        resolve(wb);
-      } catch (err) {
-        reject(new Error(`Could not read file "${file.name}": ${String(err)}`));
-      }
+      try { res(XLSX.read(e.target!.result as ArrayBuffer, { type: 'array', cellDates: true, cellNF: true, cellText: false })); }
+      catch (err) { rej(new Error(`Cannot read "${file.name}": ${err}`)); }
     };
-    reader.onerror = () => reject(new Error(`File read error: ${file.name}`));
+    reader.onerror = () => rej(new Error(`File read error: ${file.name}`));
     reader.readAsArrayBuffer(file);
   });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SEMANTIC HEADER DETECTION — LOG FILES
+// COLUMN MAPPER — LOG FILES
+// Mirrors _map_columns() from Poseidon Titan.
+// c1 = forward-filled top header, c2 = bottom sub-header, combined = c1 + c2
 // ─────────────────────────────────────────────────────────────────────────────
+interface LogColMap {
+  date?: number; me?: number; dg1?: number; dg2?: number; dg3?: number;
+}
 
-const LOG_DATE_KEYWORDS    = ['DATE', 'DAY', 'DAYS'];
-const LOG_ME_KEYWORDS      = ['MAIN ENGINE', 'MAIN ENG', 'M/E', 'M.E.', 'ME HOURS', 'M.E HOURS', 'M/E HRS'];
-const LOG_DG1_KEYWORDS     = ['DG1', 'D/G 1', 'D.G.1', 'G/E 1', 'AUX 1', 'GEN 1', 'GENERATOR 1'];
-const LOG_DG2_KEYWORDS     = ['DG2', 'D/G 2', 'D.G.2', 'G/E 2', 'AUX 2', 'GEN 2', 'GENERATOR 2'];
-const LOG_DG3_KEYWORDS     = ['DG3', 'D/G 3', 'D.G.3', 'G/E 3', 'AUX 3', 'GEN 3', 'GENERATOR 3'];
+function mapLogCols(topFilled: string[], bottom: string[], n: number): LogColMap {
+  const m: LogColMap = {};
 
-function detectLogHeader(grid: Grid): HeaderMatch | null {
-  const scanRows = Math.min(60, grid.length);
+  for (let j = 0; j < n; j++) {
+    const c1 = topFilled[j] ?? '';
+    const c2 = bottom[j] ?? '';
+    const cb = `${c1} ${c2}`.trim();
 
-  for (let i = 0; i < scanRows; i++) {
-    const row = grid[i].map(normalise);
-    const hasDate = row.some(c => LOG_DATE_KEYWORDS.some(k => c.includes(k)));
-    const hasMe   = row.some(c => LOG_ME_KEYWORDS.some(k => c.includes(k)) || c === 'ME' || c === 'MAIN');
-    if (!hasDate || !hasMe) continue;
+    if (m.date === undefined && (cb.includes('DATE') || cb.includes('DAY')))
+      m.date = j;
 
-    const colMap: ColMap = {};
-    row.forEach((cell, j) => {
-      if (!cell) return;
+    if (m.me === undefined && (
+      cb.includes('MAIN ENGINE') || cb.includes('MAIN ENG') ||
+      cb.includes('M/E') || cb.includes('M.E.') ||
+      c1.includes('MAIN') || c2 === 'ME' || c2 === 'M/E' || c2 === 'M.E.'
+    )) m.me = j;
 
-      if (!('date' in colMap) && LOG_DATE_KEYWORDS.some(k => cell.includes(k)))
-        colMap.date = j;
+    if (m.dg1 === undefined && (
+      cb.includes('DG1') || cb.includes('D/G 1') || cb.includes('D.G.1') ||
+      cb.includes('DG NO.1') || cb.includes('GEN 1') || cb.includes('G/E 1') ||
+      cb.includes('AUX 1') || cb.includes('GEN.1') ||
+      // Pattern: "D/G" in top + "No.1" or "1" in bottom
+      (c1.includes('D/G') && (c2.includes('1') || c2.includes('NO.1')))
+    )) m.dg1 = j;
 
-      if (!('me' in colMap) && (LOG_ME_KEYWORDS.some(k => cell.includes(k)) || cell === 'ME' || cell === 'MAIN'))
-        colMap.me = j;
+    if (m.dg2 === undefined && (
+      cb.includes('DG2') || cb.includes('D/G 2') || cb.includes('D.G.2') ||
+      cb.includes('DG NO.2') || cb.includes('GEN 2') || cb.includes('G/E 2') ||
+      cb.includes('AUX 2') || cb.includes('GEN.2') ||
+      (c1.includes('D/G') && (c2.includes('2') || c2.includes('NO.2')))
+    )) m.dg2 = j;
 
-      if (!('dg1' in colMap) && LOG_DG1_KEYWORDS.some(k => cell.includes(k)))
-        colMap.dg1 = j;
-
-      if (!('dg2' in colMap) && LOG_DG2_KEYWORDS.some(k => cell.includes(k)))
-        colMap.dg2 = j;
-
-      if (!('dg3' in colMap) && LOG_DG3_KEYWORDS.some(k => cell.includes(k)))
-        colMap.dg3 = j;
-    });
-
-    if (colMap.date !== undefined && colMap.me !== undefined) {
-      return { rowIdx: i, colMap };
-    }
+    if (m.dg3 === undefined && (
+      cb.includes('DG3') || cb.includes('D/G 3') || cb.includes('D.G.3') ||
+      cb.includes('DG NO.3') || cb.includes('GEN 3') || cb.includes('G/E 3') ||
+      cb.includes('AUX 3') || cb.includes('GEN.3') ||
+      (c1.includes('D/G') && (c2.includes('3') || c2.includes('NO.3')))
+    )) m.dg3 = j;
   }
 
-  return null;
+  return m;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SEMANTIC HEADER DETECTION — PMS FILES
+// COLUMN MAPPER — PMS FILES
 // ─────────────────────────────────────────────────────────────────────────────
+interface PmsColMap {
+  component?: number; ohDate?: number; hours?: number; system?: number; interval?: number;
+}
 
-const PMS_COMP_KEYWORDS  = ['COMPONENT', 'EQUIPMENT', 'ITEM', 'NAME', 'DESCRIPTION', 'DESC'];
-const PMS_DATE_KEYWORDS  = ['OVERHAUL', 'LAST OH', 'LAST O/H', 'O/H DATE', 'DATE O/H', 'INSP DATE', 'LAST INSPECTION', 'LAST INSP'];
-const PMS_HOURS_KEYWORDS = ['CURRENT HOURS', 'RUNNING HOURS', 'HOURS SINCE', 'R/H', 'RUN HRS', 'CLAIMED', 'HRS SINCE OH', 'HOURS'];
-const PMS_SYSTEM_KEYWORDS = ['SYSTEM', 'MACHINERY', 'CATEGORY', 'DEPT'];
+function mapPmsCols(topFilled: string[], bottom: string[], n: number): PmsColMap {
+  const m: PmsColMap = {};
 
-function detectPMSHeader(grid: Grid): HeaderMatch | null {
-  const scanRows = Math.min(60, grid.length);
+  for (let j = 0; j < n; j++) {
+    const c1 = topFilled[j] ?? '';
+    const c2 = bottom[j] ?? '';
+    const cb = `${c1} ${c2}`.trim();
 
-  for (let i = 0; i < scanRows; i++) {
-    const row = grid[i].map(normalise);
-    const hasComp = row.some(c => PMS_COMP_KEYWORDS.some(k => c.includes(k)));
-    const hasDate = row.some(c => PMS_DATE_KEYWORDS.some(k => c.includes(k)));
-    if (!hasComp && !hasDate) continue;
+    if (m.component === undefined && (
+      cb.includes('COMPONENT') || cb.includes('EQUIPMENT') || cb.includes('DESCRIPTION') ||
+      cb.includes('ITEM') || cb.includes('JOB DESCRIPTION') || cb.includes('TASK') ||
+      cb.includes('NAME') || c2.includes('DESCRIPTION') || c2.includes('COMPONENT')
+    )) m.component = j;
 
-    const colMap: ColMap = {};
-    row.forEach((cell, j) => {
-      if (!cell) return;
+    if (m.ohDate === undefined && (
+      cb.includes('OVERHAUL') || cb.includes('LAST OH') || cb.includes('O/H DATE') ||
+      cb.includes('LAST O/H') || cb.includes('INSP DATE') || cb.includes('LAST INSP') ||
+      cb.includes('LAST INSPECTION') || cb.includes('COMPLETED') ||
+      (cb.includes('DATE') && m.component !== undefined && m.ohDate === undefined)
+    )) m.ohDate = j;
 
-      if (!('component' in colMap) && PMS_COMP_KEYWORDS.some(k => cell.includes(k)))
-        colMap.component = j;
+    if (m.hours === undefined && (
+      cb.includes('RUNNING HOURS') || cb.includes('R/H') || cb.includes('HRS SINCE') ||
+      cb.includes('CURRENT HRS') || cb.includes('CLAIMED') || cb.includes('HOURS SINCE') ||
+      cb.includes('RUN HRS') || cb.includes('CURRENT RUNNING') ||
+      (cb.includes('HOURS') && j > 0 && m.ohDate !== undefined)
+    )) m.hours = j;
 
-      if (!('ohDate' in colMap) && PMS_DATE_KEYWORDS.some(k => cell.includes(k)))
-        colMap.ohDate = j;
+    if (m.system === undefined && (
+      cb.includes('SYSTEM') || cb.includes('MACHINERY') || cb.includes('DEPT') ||
+      cb.includes('CATEGORY') || cb.includes('PARENT')
+    )) m.system = j;
 
-      // Fallback: any "DATE" column if no specific OH date found
-      if (!('ohDate' in colMap) && cell.includes('DATE'))
-        colMap.ohDate = j;
-
-      if (!('hours' in colMap) && PMS_HOURS_KEYWORDS.some(k => cell.includes(k)))
-        colMap.hours = j;
-
-      if (!('system' in colMap) && PMS_SYSTEM_KEYWORDS.some(k => cell.includes(k)))
-        colMap.system = j;
-    });
-
-    if (colMap.component !== undefined || colMap.ohDate !== undefined) {
-      return { rowIdx: i, colMap };
-    }
+    if (m.interval === undefined && (
+      cb.includes('INTERVAL') || cb.includes('DUE HOURS') || cb.includes('NEXT OH')
+    )) m.interval = j;
   }
 
-  // Hard fallback: if the sheet has 8+ columns and no semantic headers found,
-  // try the maritime TEC-001 standard layout (col 1 = name, col 5 = date, col 7 = hours)
-  if (grid.length > 10 && (grid[0]?.length ?? 0) >= 8) {
-    return {
-      rowIdx: 7,
-      colMap: { component: 1, ohDate: 5, hours: 7 },
-    };
-  }
-
-  return null;
+  return m;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PUBLIC API — PMS PARSER
+// SYSTEM INFERENCE
 // ─────────────────────────────────────────────────────────────────────────────
-
-export async function parsePMSFile(file: File): Promise<ComponentData[]> {
-  const wb = await readWorkbook(file);
-  const components: ComponentData[] = [];
-  const parseErrors: string[] = [];
-
-  for (const sheetName of wb.SheetNames) {
-    const sheet = wb.Sheets[sheetName];
-    if (!sheet['!ref']) continue;
-
-    const grid = sheetToGrid(sheet);
-    const match = detectPMSHeader(grid);
-    if (!match) continue;
-
-    const { rowIdx, colMap } = match;
-
-    const compCol   = colMap.component ?? 1;
-    const ohDateCol = colMap.ohDate    ?? 5;
-    const hoursCol  = colMap.hours     ?? 7;
-    const sysCol    = colMap.system;
-
-    for (let r = rowIdx + 1; r < grid.length; r++) {
-      const row = grid[r];
-      if (!row || row.every(v => v === null || v === '')) continue;
-
-      const rawName  = row[compCol];
-      const rawDate  = row[ohDateCol];
-      const rawHours = hoursCol < row.length ? row[hoursCol] : null;
-      const rawSys   = sysCol !== undefined ? row[sysCol] : undefined;
-
-      if (rawName === null || rawName === undefined) continue;
-      const compName = String(rawName).trim();
-      if (!compName || compName === '' || compName.toLowerCase() === 'nan') continue;
-
-      const ohDate = parseDate(rawDate);
-      if (!ohDate) {
-        parseErrors.push(`Row ${r} skipped — invalid overhaul date: "${rawDate}"`);
-        continue;
-      }
-
-      // Reject dates far in the future (> 1 year ahead) as likely errors
-      const oneYearAhead = new Date();
-      oneYearAhead.setFullYear(oneYearAhead.getFullYear() + 1);
-      if (ohDate > oneYearAhead) {
-        parseErrors.push(`Row ${r} skipped — overhaul date ${ohDate.toISOString()} is in the future`);
-        continue;
-      }
-
-      const legacyClaimedHours = parseHours(rawHours);
-      const parentSystem       = inferSystem(compName, rawSys);
-
-      const result = ComponentSchema.safeParse({
-        componentName:      compName,
-        lastOverhaulDate:   ohDate,
-        legacyClaimedHours,
-        parentSystem,
-      });
-
-      if (result.success) {
-        components.push(result.data);
-      } else {
-        parseErrors.push(`Row ${r} ("${compName}"): ${result.error.errors[0]?.message}`);
-      }
-    }
-
-    // If we found data in this sheet, stop processing more sheets
-    if (components.length > 0) break;
-  }
-
-  if (components.length === 0) {
-    const errorDetail = parseErrors.length > 0
-      ? ` Validation errors: ${parseErrors.slice(0, 5).join(' | ')}`
-      : ' No sheets contained recognisable PMS header rows.';
-    throw new Error(`PMS parse failed for "${file.name}".${errorDetail}`);
-  }
-
-  console.info(`[PMS] Parsed ${components.length} components from "${file.name}". Skipped ${parseErrors.length} rows.`);
-  return components;
+function inferSystem(name: string, sysCell?: CV): SystemLabel {
+  const s = `${norm(name)} ${norm(sysCell)}`;
+  if (s.includes('DG3') || s.includes('D/G 3') || s.includes('GEN 3') || s.includes('G/E 3') || s.includes('AUX 3')) return 'DG3';
+  if (s.includes('DG2') || s.includes('D/G 2') || s.includes('GEN 2') || s.includes('G/E 2') || s.includes('AUX 2')) return 'DG2';
+  if (s.includes('DG1') || s.includes('D/G 1') || s.includes('GEN 1') || s.includes('G/E 1') || s.includes('AUX 1')) return 'DG1';
+  if (s.includes('DG') || s.includes('D/G') || s.includes('DIESEL GEN') || s.includes('GENERATOR') || s.includes('GENSET')) return 'DG1';
+  return 'MAIN_ENGINE';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PUBLIC API — LOG FILE PARSER
+// HEADER SCANNER — finds the row index containing sentinel keywords
+// Mirrors Poseidon's "for i in range(min(150, len(df_raw)))" loop
 // ─────────────────────────────────────────────────────────────────────────────
+function findHeaderRow(
+  grid: Row[],
+  sentinelGroups: string[][]  // every group must match at least one column
+): number {
+  for (let i = 0; i < Math.min(80, grid.length); i++) {
+    const cells = grid[i].map(norm);
+    const allMatch = sentinelGroups.every(group =>
+      group.some(kw => cells.some(c => c.includes(kw)))
+    );
+    if (allMatch) return i;
+  }
+  return -1;
+}
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PUBLIC: PARSE LOG FILE
+// ─────────────────────────────────────────────────────────────────────────────
 export async function parseLogFile(file: File): Promise<DailyLog[]> {
-  const wb = await readWorkbook(file);
+  const wb   = await readWB(file);
   const logs: DailyLog[] = [];
-  const parseErrors: string[] = [];
+  const errs: string[]   = [];
 
   for (const sheetName of wb.SheetNames) {
-    const sheet = wb.Sheets[sheetName];
-    if (!sheet['!ref']) continue;
+    const ws   = wb.Sheets[sheetName];
+    if (!ws['!ref']) continue;
+    const grid = sheetToGrid(ws);
 
-    const grid = sheetToGrid(sheet);
-    const match = detectLogHeader(grid);
-    if (!match) continue;
+    // Must have DATE (or DAY) AND a MAIN ENGINE variant
+    const headerIdx = findHeaderRow(grid, [
+      ['DATE', 'DAY'],
+      ['MAIN', 'M/E', 'M.E.', 'MAIN ENGINE', 'ENGINE'],
+    ]);
+    if (headerIdx < 0) continue;
 
-    const { rowIdx, colMap } = match;
+    // Poseidon approach: top row forward-filled + bottom sub-header
+    const topFilled = fwdFill(grid[headerIdx]);
+    const bottom    = (grid[headerIdx + 1] ?? []).map(norm);
 
-    const dateCol = colMap.date ?? 0;
-    const meCol   = colMap.me   ?? 1;
-    const dg1Col  = colMap.dg1;
-    const dg2Col  = colMap.dg2;
-    const dg3Col  = colMap.dg3;
+    const m = mapLogCols(topFilled, bottom, Math.max(topFilled.length, bottom.length));
+    if (m.date === undefined || m.me === undefined) continue;
 
-    for (let r = rowIdx + 1; r < grid.length; r++) {
+    // Data starts after the header pair
+    const dataStart = headerIdx + (bottom.some(c => c && !['DATE','DAY','MAIN','M/E','ENGINE'].includes(c)) ? 2 : 1);
+
+    for (let r = dataStart; r < grid.length; r++) {
       const row = grid[r];
-      if (!row || row.every(v => v === null || v === '' || v === 0)) continue;
+      if (!row || row.every(v => v === null || v === undefined || v === '')) continue;
 
-      const date = parseDate(row[dateCol]);
-      if (!date) continue;
+      const date = safeDate(row[m.date]);
+      if (!date || date.getFullYear() < 1980 || date.getFullYear() > 2100) continue;
 
-      // Reject clearly invalid years
-      if (date.getFullYear() < 1990 || date.getFullYear() > 2100) continue;
-
-      const mainEngineHours = parseHours(row[meCol]);
-      const dg1Hours        = dg1Col !== undefined ? parseHours(row[dg1Col]) : 0;
-      const dg2Hours        = dg2Col !== undefined ? parseHours(row[dg2Col]) : 0;
-      const dg3Hours        = dg3Col !== undefined ? parseHours(row[dg3Col]) : 0;
-
-      // Parse without constraints — physics violations captured downstream
-      const result = DailyLogSchema.safeParse({
+      const log: DailyLog = {
         date,
-        mainEngineHours,
-        dg1Hours,
-        dg2Hours,
-        dg3Hours,
-      });
-
-      if (result.success) {
-        logs.push(result.data);
-      } else {
-        // Log still added with clamped values to preserve timeline continuity
-        logs.push({ date, mainEngineHours, dg1Hours, dg2Hours, dg3Hours });
-        parseErrors.push(`Row ${r} (${date.toDateString()}): ${result.error.errors[0]?.message}`);
-      }
+        mainEngineHours: sn0(row[m.me]),
+        dg1Hours:  m.dg1 !== undefined ? sn0(row[m.dg1]) : 0,
+        dg2Hours:  m.dg2 !== undefined ? sn0(row[m.dg2]) : 0,
+        dg3Hours:  m.dg3 !== undefined ? sn0(row[m.dg3]) : 0,
+      };
+      logs.push(log);
     }
 
-    if (logs.length > 0) break;
+    if (logs.length > 0) break; // Found data — stop scanning sheets
   }
 
   if (logs.length === 0) {
+    const detail = errs.slice(0, 3).join(' | ');
     throw new Error(
-      `Log parse failed for "${file.name}". ` +
-      'No sheet contained a recognisable date + main-engine header row.'
+      `Log parse failed for "${file.name}". No sheet contained a recognisable DATE + MAIN ENGINE header. ` +
+      (detail ? `Details: ${detail}` : 'Verify the file has a row with "Date"/"Day" and "Main Engine"/"M/E" columns.')
     );
   }
 
-  console.info(`[LOG] Parsed ${logs.length} entries from "${file.name}". Skipped/warned ${parseErrors.length} rows.`);
+  console.info(`[LOG] ${file.name}: ${logs.length} daily entries parsed.`);
   return logs;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUBLIC: PARSE PMS FILE
+// ─────────────────────────────────────────────────────────────────────────────
+export async function parsePMSFile(file: File): Promise<ComponentData[]> {
+  const wb    = await readWB(file);
+  const comps: ComponentData[] = [];
+  const errs:  string[]        = [];
+
+  for (const sheetName of wb.SheetNames) {
+    const ws   = wb.Sheets[sheetName];
+    if (!ws['!ref']) continue;
+    const grid = sheetToGrid(ws);
+
+    // PMS header must have some kind of component/item column + a date column
+    const headerIdx = findHeaderRow(grid, [
+      ['COMPONENT', 'EQUIPMENT', 'DESCRIPTION', 'ITEM', 'NAME', 'JOB'],
+      ['DATE', 'OVERHAUL', 'OH', 'INSP', 'O/H', 'LAST'],
+    ]);
+
+    let hIdx = headerIdx;
+
+    // Hard fallback for TEC-001 standard layout (no semantic headers in row)
+    if (hIdx < 0 && grid.length > 10 && (grid[0]?.length ?? 0) >= 8) {
+      hIdx = 7; // TEC-001 data typically starts at row 8
+    }
+    if (hIdx < 0) continue;
+
+    const topFilled = fwdFill(grid[hIdx]);
+    const bottom    = (grid[hIdx + 1] ?? []).map(norm);
+
+    let m = mapPmsCols(topFilled, bottom, Math.max(topFilled.length, bottom.length));
+
+    // TEC-001 column fallback (col 1 = name, col 5 = date, col 7 = hours)
+    if (m.component === undefined) m.component = 1;
+    if (m.ohDate    === undefined) m.ohDate    = 5;
+    if (m.hours     === undefined) m.hours     = 7;
+
+    const dataStart = hIdx + (bottom.some(c => c.length > 0) ? 2 : 1);
+
+    for (let r = dataStart; r < grid.length; r++) {
+      const row = grid[r];
+      if (!row || row.every(v => v === null || v === undefined || v === '')) continue;
+
+      const rawName = row[m.component!];
+      if (!rawName) continue;
+      const compName = String(rawName).trim();
+      if (!compName || ['NAN','NULL','NONE','N/A','-'].includes(compName.toUpperCase())) continue;
+
+      const ohDate = safeDate(row[m.ohDate!]);
+      if (!ohDate) { errs.push(`Row ${r}: no valid overhaul date for "${compName}"`); continue; }
+      if (ohDate.getFullYear() < 1980 || ohDate > new Date(Date.now() + 365*86_400_000)) continue;
+
+      const legacyH     = sn0(m.hours !== undefined ? row[m.hours] : null);
+      const parentSystem = inferSystem(compName, m.system !== undefined ? row[m.system] : undefined);
+
+      comps.push({ componentName: compName, lastOverhaulDate: ohDate, legacyClaimedHours: legacyH, parentSystem });
+    }
+
+    if (comps.length > 0) break;
+  }
+
+  if (comps.length === 0) {
+    throw new Error(
+      `PMS parse failed for "${file.name}". ` +
+      (errs.length ? `Errors: ${errs.slice(0,5).join(' | ')}` : 'No rows contained a valid component name + overhaul date pair.')
+    );
+  }
+
+  console.info(`[PMS] ${file.name}: ${comps.length} components parsed. Skipped ${errs.length} rows.`);
+  return comps;
 }
