@@ -7,8 +7,6 @@ import hashlib
 from datetime import datetime
 import base64
 import traceback
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -20,7 +18,6 @@ st.set_page_config(page_title="POSEIDON | Recon Suite", page_icon="⚓", layout=
 
 def _u(s): return f"data:image/svg+xml;base64,{base64.b64encode(s.encode()).decode()}"
 
-# SVG Assets from Poseidon Titan Zenith Edition
 LOGO_SVG = base64.b64encode(b'<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="pg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#c9a84c"/><stop offset="50%" stop-color="#00e0b0"/><stop offset="100%" stop-color="#fff"/></linearGradient></defs><circle cx="24" cy="24" r="22" fill="none" stroke="url(#pg)" stroke-width="0.8" opacity=".3"/><path d="M24 6L24 42" stroke="url(#pg)" stroke-width="1.5" stroke-linecap="round"/><path d="M12 24Q24 32 36 24" fill="none" stroke="url(#pg)" stroke-width="1.5" stroke-linecap="round"/></svg>').decode()
 
 ICONS = {
@@ -151,36 +148,7 @@ def parse_pms_binary_doc(file_bytes):
     return pd.DataFrame(), raw_cells_df
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 3. PLOTLY RENDER ENGINE
-# ═══════════════════════════════════════════════════════════════════════════════
-_BL = dict(
-    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-    font=dict(family='Inter', color='#f8fafc')
-)
-_AX = dict(gridcolor='rgba(255,255,255,0.05)', zerolinecolor='rgba(255,255,255,0.1)', tickfont=dict(family='JetBrains Mono', color='#475569'))
-
-def chart_drift(res_df):
-    """Generates the high-fidelity POSEIDON drift comparison chart."""
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=res_df['Component'], y=res_df['Legacy Claim'], name='Claimed (Reported)',
-        marker_color='rgba(201,168,76,0.15)', marker_line_color='#c9a84c', marker_line_width=1.5
-    ))
-    fig.add_trace(go.Bar(
-        x=res_df['Component'], y=res_df['Verified Math'], name='Verified (Engine)',
-        marker_color='rgba(0,224,176,0.15)', marker_line_color='#00e0b0', marker_line_width=1.5
-    ))
-    fig.update_layout(
-        **_BL,
-        title=dict(text='Forensic Variance: Claimed vs Verified Running Hours', font=dict(size=18, color="#fff", family='Inter')),
-        barmode='group', height=500, margin=dict(l=10, r=10, t=60, b=40),
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-        xaxis=dict(tickangle=-45, automargin=True, **_AX), yaxis=dict(title='Running Hours', **_AX)
-    )
-    return fig
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 4. MAIN FRONTEND ORCHESTRATOR
+# 3. MAIN FRONTEND ORCHESTRATOR
 # ═══════════════════════════════════════════════════════════════════════════════
 st.markdown(f"""
 <div class="hero">
@@ -194,7 +162,7 @@ st.markdown(f"""
     <div class="hero-badge">
         <span style="color:#00e0b0">KERNEL</span>&ensp;Zero-Trust Triangulation<br>
         <span style="color:#00e0b0">DECODER</span>&ensp;ASCII Bell Extraction<br>
-        <span style="color:#fff">BUILD</span>&ensp;v10.0.0 The Zenith Edition
+        <span style="color:#fff">BUILD</span>&ensp;v10.0.1 Native Edition
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -240,7 +208,7 @@ if pms_file and logs_file:
                     })
 
             # ═══════════════════════════════════════════════════════════════════════════════
-            # 5. DASHBOARD RENDERING
+            # 4. DASHBOARD RENDERING
             # ═══════════════════════════════════════════════════════════════════════════════
             st.markdown("<br>", unsafe_allow_html=True)
             t1, t2, t3 = st.tabs(["📊 IMMUTABLE LEDGER", "📈 FORENSIC PLOT", "🔎 GLASS-BOX DIAGNOSTICS"])
@@ -303,9 +271,11 @@ if pms_file and logs_file:
 
             with t2:
                 if audit_results:
-                    # Rename columns temporarily for the Plotly chart wrapper
-                    plot_df = res_df.rename(columns={'Claimed (Doc)': 'Legacy Claim', 'Verified (Excel)': 'Verified Math'})
-                    st.plotly_chart(chart_drift(plot_df), use_container_width=True, config={'displayModeBar': False})
+                    st.markdown("### Claimed vs Verified Running Hours")
+                    st.markdown("<span style='color:#64748b; font-size:0.85rem;'>Native Streamlit rendering (Zero external chart dependencies)</span><br><br>", unsafe_allow_html=True)
+                    # Prepare data for native st.bar_chart
+                    plot_df = res_df[['Component', 'Claimed (Doc)', 'Verified (Excel)']].set_index('Component')
+                    st.bar_chart(plot_df, color=["#c9a84c", "#00e0b0"], height=500)
 
             with t3:
                 st.markdown("### The Transparency Engine")
