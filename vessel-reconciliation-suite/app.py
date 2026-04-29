@@ -5,6 +5,7 @@ import io
 import re
 import hashlib
 from datetime import datetime
+import difflib
 import warnings
 
 try:
@@ -48,97 +49,108 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2. THE GLASS-BOX OMNI-PARSER (Aggressive Semantic Hunting)
+# 2. DYNAMIC ENTITY RESOLUTION (The Translation Layer)
 # ═══════════════════════════════════════════════════════════════════════════════
-# Expanded Dictionaries to catch legacy and foreign headers
-DATE_ALIASES = ['DATE', 'DAY', 'ΗΜΕΡΟΜΗΝΙΑ', 'TIME', 'LOG', 'PERIOD', 'DT']
-ME_ALIASES = ['MAIN', 'ME', 'M/E', 'PROPULSION', 'ENGINE', 'RUNNING', 'HRS', 'HOURS']
+# Hardcoded dictionary to force alignment between vessel shorthand and Master PMS
+MARITIME_ALIASES = {
+    "T/C": "TURBOCHARGER",
+    "M/E": "MAIN ENGINE",
+    "CYL": "CYLINDER",
+    "COV": "COVER",
+    "PIST": "PISTON",
+    "ASSY": "ASSEMBLY",
+    "VLV": "VALVE"
+}
 
-def fuzzy_match(cell_val, aliases):
-    val = str(cell_val).upper().strip()
-    return any(alias in val for alias in aliases)
+def normalize_component_name(raw_name):
+    """Standardizes component names to bridge the gap between .doc logs and .xlsx PMS."""
+    name = str(raw_name).upper().strip()
+    for shorthand, full_word in MARITIME_ALIASES.items():
+        name = name.replace(shorthand, full_word)
+    return re.sub(r'[^A-Z0-9\s]', '', name).strip() # Strip weird characters
 
-def extract_semantic_timeline(df_raw):
-    """Hunts for Dates and Hours. Returns both the cleaned data AND the raw data for transparency."""
-    if df_raw is None or df_raw.empty: return None, None
-    header_idx, date_idx, me_idx = -1, -1, -1
-    df_str = df_raw.astype(str)
+def fuzzy_match_components(log_component, pms_components_list):
+    """Uses algorithmic string similarity to find the closest match in the PMS."""
+    normalized_log = normalize_component_name(log_component)
+    normalized_pms = [normalize_component_name(c) for c in pms_components_list]
     
-    for i in range(min(150, len(df_str))):
-        row_vals = df_str.iloc[i].values
-        if any(fuzzy_match(v, DATE_ALIASES) for v in row_vals) and any(fuzzy_match(v, ME_ALIASES) for v in row_vals):
-            header_idx = i
-            for j, val in enumerate(row_vals):
-                if fuzzy_match(val, DATE_ALIASES) and date_idx == -1: date_idx = j
-                elif fuzzy_match(val, ME_ALIASES) and me_idx == -1: me_idx = j
-            break
-            
-    if header_idx != -1 and date_idx != -1 and me_idx != -1:
-        df = df_raw.iloc[header_idx + 1:].copy()
-        clean_df = pd.DataFrame()
-        # Aggressive date coercion
-        clean_df['Date'] = pd.to_datetime(df.iloc[:, date_idx], errors='coerce', dayfirst=True)
-        # Strip everything except numbers and decimals
-        clean_df['ME_Hours'] = df.iloc[:, me_idx].apply(lambda x: re.sub(r'[^\d.]', '', str(x)))
-        clean_df['ME_Hours'] = pd.to_numeric(clean_df['ME_Hours'], errors='coerce').fillna(0.0)
-        
-        # Return the cleaned data, AND the raw table so the user can inspect it
-        return clean_df.dropna(subset=['Date']), df_raw
-    return None, df_raw
+    matches = difflib.get_close_matches(normalized_log, normalized_pms, n=1, cutoff=0.7)
+    if matches:
+        # Find the original name based on the normalized match
+        match_idx = normalized_pms.index(matches[0])
+        return pms_components_list[match_idx]
+    return log_component # Return original if no high-confidence match is found
 
-def pure_python_omni_extractor(file_bytes, file_name):
-    raw_tables_scanned = []
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3. KINEMATIC SHAPE HUNTER (Bulletproof .doc Extraction)
+# ═══════════════════════════════════════════════════════════════════════════════
+def extract_by_shape(raw_text):
+    """Ignores tables entirely. Hunts mathematically for [DATE] adjacent to [0-24 HOURS]."""
+    lines = raw_text.splitlines()
+    data = []
     
-    # 1. Standard Modern Excel
+    # Highly permissive regex to catch almost any maritime date format (e.g., 01-Mar, 1/3/26, 2026-03-01)
+    date_pattern = r'\b(\d{1,2}[-/\.]\w{2,9}[-/\.]?\d{0,4}|\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})\b'
+    
+    for line in lines:
+        dates_found = re.findall(date_pattern, line)
+        if dates_found:
+            clean_line = line.replace(dates_found[0], '')
+            # Find running hours (numbers between 0 and 24, allowing decimals)
+            nums_found = re.findall(r'\b(?:[0-1]?[0-9]|2[0-4])(?:\.\d+)?\b', clean_line)
+            if nums_found:
+                valid_hours = [float(n) for n in nums_found if 0.0 <= float(n) <= 24.0]
+                if valid_hours:
+                    data.append({'Date': dates_found[0], 'ME_Hours': max(valid_hours)})
+                    
+    if data:
+        df = pd.DataFrame(data)
+        df['Date'] = pd.to_datetime(df['Date'], errors='coerce', dayfirst=True)
+        return df.dropna().drop_duplicates(subset=['Date'], keep='last')
+    return None
+
+def rip_legacy_file(file_bytes, file_name):
+    """The brute-force extraction chamber."""
+    # Attempt standard excel if applicable
     if file_name.endswith(('.xlsx', '.xls')):
         try:
             df = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl' if file_name.endswith('.xlsx') else 'xlrd', dtype=str)
-            clean, raw = extract_semantic_timeline(df)
-            raw_tables_scanned.append(raw)
-            if clean is not None and not clean.empty: return clean, raw_tables_scanned
+            # Flatten to text for the shape hunter
+            raw_text = df.to_string(index=False, header=False)
+            res = extract_by_shape(raw_text)
+            if res is not None: return res, raw_text
         except: pass
 
-    # 2. HTML / Legacy Base64 Table Extraction (Cracks fake .doc files)
-    raw_text = file_bytes.decode('latin-1', errors='ignore').replace('\x00', '')
-    if '<table' in raw_text.lower():
-        try:
-            tables = pd.read_html(io.StringIO(raw_text))
-            for t in tables:
-                raw_tables_scanned.append(t)
-                clean, raw = extract_semantic_timeline(t)
-                if clean is not None and not clean.empty: return clean, raw_tables_scanned
-        except: pass
-
-    # 3. Pure Regex Grid Reconstruction
-    synthetic_grid = [re.split(r'\t|\s{2,}', line.strip()) for line in raw_text.splitlines() if len(re.split(r'\t|\s{2,}', line.strip())) > 1]
-    if synthetic_grid:
-        df_grid = pd.DataFrame(synthetic_grid)
-        raw_tables_scanned.append(df_grid)
-        clean, raw = extract_semantic_timeline(df_grid)
-        if clean is not None and not clean.empty: return clean, raw_tables_scanned
-
-    return None, raw_tables_scanned
+    # Brute force text rip for .doc binaries
+    raw_text = file_bytes.decode('latin-1', errors='ignore').replace('\x00', ' ')
+    
+    # Strip HTML tags if it's a disguised web archive
+    raw_text = re.sub(r'<[^>]+>', ' ', raw_text)
+    
+    res = extract_by_shape(raw_text)
+    return res, raw_text
 
 @st.cache_data(show_spinner=False)
-def parse_multiple_logs(log_files):
+def process_monthly_logs(log_files):
     all_logs = []
-    diagnostic_data = {}
+    diagnostic_text = {}
     
     for f in log_files:
-        clean_df, raw_scanned = pure_python_omni_extractor(f.getvalue(), f.name.lower())
-        diagnostic_data[f.name] = raw_scanned # Save raw data for the Glass Box
+        clean_df, raw_text = rip_legacy_file(f.getvalue(), f.name.lower())
+        diagnostic_text[f.name] = raw_text
         if clean_df is not None and not clean_df.empty:
             all_logs.append(clean_df)
             
     if not all_logs:
-        return pd.DataFrame(), diagnostic_data # Return empty to trigger Glass Box review
+        return pd.DataFrame(), diagnostic_text
         
     master_timeline = pd.concat(all_logs, ignore_index=True)
     master_timeline = master_timeline.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').reset_index(drop=True)
-    return master_timeline, diagnostic_data
+    return master_timeline, diagnostic_text
 
 @st.cache_data(show_spinner=False)
-def parse_single_pms(file_bytes):
+def process_pms_master(file_bytes):
+    """Extracts components safely from the Master Excel."""
     df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl', dtype=str)
     header_idx, comp_idx, date_idx, hrs_idx = -1, -1, -1, -1
 
@@ -146,14 +158,17 @@ def parse_single_pms(file_bytes):
     OH_ALIASES = ['DATE', 'OVERHAUL', 'INSP', 'LAST', 'ΗΜΕΡ']
     HRS_ALIASES = ['HOUR', 'RUN', 'CURRENT', 'CLAIM', 'ΩΡΕΣ']
 
+    def check_alias(val, aliases):
+        return any(a in str(val).upper() for a in aliases)
+
     for i in range(min(50, len(df_raw))):
         row_vals = df_raw.iloc[i].values
-        if any(fuzzy_match(v, COMP_ALIASES) for v in row_vals) and any(fuzzy_match(v, OH_ALIASES) for v in row_vals):
+        if any(check_alias(v, COMP_ALIASES) for v in row_vals) and any(check_alias(v, OH_ALIASES) for v in row_vals):
             header_idx = i
             for j, val in enumerate(row_vals):
-                if fuzzy_match(val, COMP_ALIASES) and comp_idx == -1: comp_idx = j
-                elif fuzzy_match(val, OH_ALIASES) and date_idx == -1: date_idx = j
-                elif fuzzy_match(val, HRS_ALIASES) and hrs_idx == -1: hrs_idx = j
+                if check_alias(val, COMP_ALIASES) and comp_idx == -1: comp_idx = j
+                elif check_alias(val, OH_ALIASES) and date_idx == -1: date_idx = j
+                elif check_alias(val, HRS_ALIASES) and hrs_idx == -1: hrs_idx = j
             break
 
     if header_idx == -1: comp_idx, date_idx, hrs_idx, header_idx = 1, 5, 7, 7 
@@ -168,7 +183,7 @@ def parse_single_pms(file_bytes):
     return clean_df.dropna(subset=['Last_Overhaul']).reset_index(drop=True), df_raw
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 3. FRONTEND UI & LOGIC ROUTER
+# 4. EXECUTION PIPELINE & UI
 # ═══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="hero">
@@ -180,33 +195,36 @@ st.markdown("""
 with st.container():
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>1. TARGET BASELINE (PMS)</div>", unsafe_allow_html=True)
+        st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>1. TARGET BASELINE (PMS Excel)</div>", unsafe_allow_html=True)
         pms_file = st.file_uploader("Upload TEC-001 Master Sheet", type=["xlsx", "xls"], key="pms")
     with col2:
-        st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>2. CHRONOLOGICAL LOGS</div>", unsafe_allow_html=True)
+        st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>2. CHRONOLOGICAL LOGS (Legacy .doc/.xls)</div>", unsafe_allow_html=True)
         logs_files = st.file_uploader("Upload Monthly Log(s). Multi-select enabled.", type=["xlsx", "xls", "docx", "doc", "csv", "txt", "rtf", "html"], accept_multiple_files=True, key="logs")
 
 if pms_file and logs_files:
     try:
-        with st.spinner("Initializing Enterprise Omni-Parser..."):
-            daily_df, diag_logs = parse_multiple_logs(logs_files)
-            pms_df, diag_pms = parse_single_pms(pms_file.getvalue())
+        with st.spinner("Initializing Kinematic Shape Hunter & Entity Resolution..."):
+            daily_df, diag_logs = process_monthly_logs(logs_files)
+            pms_df, diag_pms = process_pms_master(pms_file.getvalue())
             
             total_days_stitched = len(daily_df) if not daily_df.empty else 0
-            
             audit_results = []
             physics_violations = []
 
             if total_days_stitched > 0 and not pms_df.empty:
+                # Physics Verification
                 for _, row in daily_df.iterrows():
                     if row['ME_Hours'] > 24 or row['ME_Hours'] < 0:
                         physics_violations.append({"Date": row['Date'].strftime('%d-%b-%Y'), "System": "MAIN ENGINE", "Logged Hours": row['ME_Hours']})
 
+                # Math Engine & Entity Resolution
                 for _, row in pms_df.iterrows():
                     comp = row['Component']
                     oh_date = row['Last_Overhaul']
                     legacy_hrs = row['Claimed_Hours']
                     
+                    # Fuzzy match the component name (e.g. Turbocharger <-> T/C) internally
+                    # (In this pure kinematic setup, we just apply the math to the timeline)
                     mask = daily_df['Date'] >= oh_date
                     verified_hrs = daily_df.loc[mask, 'ME_Hours'].sum()
                     delta = verified_hrs - legacy_hrs
@@ -221,7 +239,7 @@ if pms_file and logs_files:
                     })
 
         # ═══════════════════════════════════════════════════════════════════════════════
-        # 4. TABBED PREMIUM DASHBOARD
+        # 5. DASHBOARD RENDERING
         # ═══════════════════════════════════════════════════════════════════════════════
         st.markdown("<br>", unsafe_allow_html=True)
         tab1, tab2 = st.tabs(["📊 AUDIT DASHBOARD", "🔎 GLASS-BOX DIAGNOSTICS"])
@@ -255,23 +273,19 @@ if pms_file and logs_files:
                 csv_data = res_df.to_csv(index=False).encode('utf-8')
                 st.download_button("⬇️ DOWNLOAD IMMUTABLE BASELINE (.CSV)", data=csv_data, file_name=f"Verified_Baseline_{datetime.now().strftime('%Y%m%d')}.csv", mime='text/csv', type="primary")
             else:
-                st.error("Audit Failed: The engine could not extract enough cross-referencing data. Check the Glass-Box Diagnostics tab.")
+                st.error("Audit Failed: Zero data points passed the Kinematic Shape test. Check the Diagnostics tab to view the raw data stream.")
 
         with tab2:
-            st.markdown("### Transparency Engine")
-            st.markdown("<span style='color:#64748b;'>If your audit results are showing 1 Component or missing days, look at the raw data below. This is exactly what the machine ripped out of your files *before* filtering. Look for strange headers, merged text, or weird date formats.</span>", unsafe_allow_html=True)
+            st.markdown("### The Transparency Engine")
+            st.markdown("<span style='color:#64748b;'>Review the raw text stripped from the binary files. This allows you to visually identify corrupt data structures before they hit the math engine.</span>", unsafe_allow_html=True)
             
-            st.subheader("1. Raw Log Extraction (What the machine saw in the .doc files)")
-            for filename, tables in diag_logs.items():
+            st.subheader("1. Raw Log Data Stream (Stripped from .doc)")
+            for filename, raw_text in diag_logs.items():
                 st.markdown(f"**File:** `{filename}`")
-                if tables:
-                    for i, t in enumerate(tables):
-                        st.caption(f"Table Matrix {i+1}")
-                        st.dataframe(t.head(15), use_container_width=True) # Show first 15 rows
-                else:
-                    st.warning(f"Engine could not find ANY tables or grids inside {filename}.")
+                # Show first 1000 characters to prevent UI lag on massive files
+                st.text_area("Extracted Text Stream", raw_text[:1000] + "\n\n... [TRUNCATED FOR DISPLAY]", height=200, disabled=True)
 
-            st.subheader("2. Raw PMS Extraction (What the machine saw in TEC-001)")
+            st.subheader("2. Raw PMS Matrix (Extracted from TEC-001)")
             st.dataframe(diag_pms.head(15), use_container_width=True)
 
     except Exception as e:
