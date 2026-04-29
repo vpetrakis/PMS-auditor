@@ -1,644 +1,550 @@
-import io
-import re
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
-
-import numpy as np
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import numpy as np
+import re
+from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
+from io import BytesIO
 
-st.set_page_config(page_title="PMS Running Hours Reconciliation", layout="wide")
+st.set_page_config(page_title="PMS Running Hours Checker", layout="wide")
 
-MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-DEFAULT_TOLERANCE = 0.01
+# =========================================================
+# Helpers
+# =========================================================
 
+MONTH_MAP = {
+    "jan": 1, "january": 1,
+    "feb": 2, "february": 2,
+    "mar": 3, "march": 3,
+    "apr": 4, "april": 4,
+    "may": 5,
+    "jun": 6, "june": 6,
+    "jul": 7, "july": 7,
+    "aug": 8, "august": 8,
+    "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10,
+    "nov": 11, "november": 11,
+    "dec": 12, "december": 12,
+}
 
-@dataclass
-class ParseResult:
-    detail: pd.DataFrame
-    summary: pd.DataFrame
-    source_name: str
+MONTH_COLS = ["Jan.", "Feb.", "Mar.", "Apr.", "May", "Jun.", "Jul.", "Aug.", "Sep.", "Oct.", "Nov.", "Dec."]
+MONTH_COLS_ALT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
+ENGINE_DAILY_MAP = {
+    "MAIN ENGINE": "me_hrs",
+    "DIESEL GENERATOR NO.1": "dg1_hrs",
+    "DIESEL GENERATOR NO.2": "dg2_hrs",
+    "DIESEL GENERATOR NO.3": "dg3_hrs",
+    "DIESEL GENERATOR NO.4": "dg4_hrs",
+}
 
-class ReconError(Exception):
-    pass
+ENTITY_TO_DAILY_COL = {
+    "ME": "me_hrs",
+    "DG1": "dg1_hrs",
+    "DG2": "dg2_hrs",
+    "DG3": "dg3_hrs",
+    "DG4": "dg4_hrs",
+}
 
-
-@st.cache_data(show_spinner=False)
-def read_excel_sheets(file_bytes: bytes) -> Dict[str, pd.DataFrame]:
-    excel = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
-    sheets = {}
-    for sheet in excel.sheet_names:
-        sheets[sheet] = excel.parse(sheet_name=sheet, header=None, dtype=object)
-    return sheets
-
-
-def normalize_text(value: object) -> str:
-    if value is None:
+def clean_text(x):
+    if pd.isna(x):
         return ""
-    if isinstance(value, float) and np.isnan(value):
-        return ""
-    text = str(value).replace("\n", " ").replace("\r", " ")
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
+    return str(x).strip()
 
-
-def normalize_name(value: object) -> str:
-    text = normalize_text(value).upper()
-    text = text.replace("CYL.", "CYLINDER")
-    text = text.replace("ASSY", "ASSEMBLY")
-    text = text.replace("LINNER", "LINER")
-    text = re.sub(r"\bNO\.?\s*(\d+)\b", r"NO \1", text)
-    text = re.sub(r"[^A-Z0-9 ]+", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
-def to_number(value: object) -> Optional[float]:
-    if value is None:
-        return None
-    if isinstance(value, (int, float, np.integer, np.floating)):
-        if pd.isna(value):
-            return None
-        return float(value)
-    text = normalize_text(value)
-    if not text:
-        return None
-    text = text.replace(",", "")
+def safe_num(x):
+    if pd.isna(x):
+        return np.nan
+    s = str(x).strip().replace(",", "")
+    if s in ["", "nan", "None", "ERRORREF!", "ERRORVALUE!"]:
+        return np.nan
     try:
-        return float(text)
-    except ValueError:
+        return float(s)
+    except:
+        return np.nan
+
+def parse_date_flexible(x):
+    if pd.isna(x):
+        return pd.NaT
+    if isinstance(x, pd.Timestamp):
+        return x.normalize()
+    s = str(x).strip()
+    if s == "" or s.lower() == "nan":
+        return pd.NaT
+
+    try:
+        dt = pd.to_datetime(s, dayfirst=True, errors="coerce")
+        if pd.notna(dt):
+            return dt.normalize()
+    except:
+        pass
+
+    s2 = s.replace(" ", "").replace(".", "").replace("/", "-")
+    s2 = s2.upper()
+
+    m = re.match(r"(\d{1,2})-?([A-Z]{3,9})-?(\d{2,4})", s2)
+    if m:
+        d = int(m.group(1))
+        mon_txt = m.group(2).lower()
+        y = int(m.group(3))
+        if y < 100:
+            y += 2000
+        mon = MONTH_MAP.get(mon_txt[:3], MONTH_MAP.get(mon_txt))
+        if mon:
+            try:
+                return pd.Timestamp(year=y, month=mon, day=d)
+            except:
+                return pd.NaT
+
+    return pd.NaT
+
+def normalize_cols(df):
+    cols = []
+    for c in df.columns:
+        c2 = str(c).replace("\n", " ").strip()
+        cols.append(c2)
+    df.columns = cols
+    return df
+
+def month_name_to_num(name):
+    if not isinstance(name, str):
         return None
-
-
-def detect_sheet_name(sheets: Dict[str, pd.DataFrame], keywords: List[str]) -> Optional[str]:
-    for name in sheets:
-        upper = name.upper()
-        if all(k.upper() in upper for k in keywords):
-            return name
-    return None
-
-
-def find_month_header_row(df: pd.DataFrame) -> Optional[int]:
-    for i in range(min(len(df), 200)):
-        row = [normalize_text(x) for x in df.iloc[i].tolist()]
-        count = sum(1 for cell in row if cell in MONTHS)
-        if count >= 3:
-            return i
-    return None
-
-
-def find_pms_header_row(df: pd.DataFrame) -> Optional[int]:
-    for i in range(min(len(df), 120)):
-        row = [normalize_text(x).upper() for x in df.iloc[i].tolist()]
-        if "CODE NO" in row and "ITEMS" in row:
-            return i
-    return None
-
-
-def extract_pms_summary(df: pd.DataFrame) -> pd.DataFrame:
-    rows = []
-    text_df = df.fillna("")
-    for i in range(len(text_df)):
-        row = [normalize_text(x) for x in text_df.iloc[i].tolist()]
-        joined = " | ".join(row).upper()
-
-        if "CURRENT YEAR UP-TO-DATE TOTAL WORKING HOURS" in joined:
-            equipment = None
-            prefix = joined.split("CURRENT YEAR UP-TO-DATE TOTAL WORKING HOURS")[0].strip(" |")
-
-            for candidate in [
-                "MAIN ENGINE",
-                "DIESEL GENERATOR NO. 1",
-                "DIESEL GENERATOR NO. 2",
-                "DIESEL GENERATOR NO. 3",
-                "DIESEL GENERATOR NO. 4",
-            ]:
-                if candidate in joined:
-                    equipment = candidate
-                    break
-
-            if equipment is None and prefix:
-                equipment = prefix
-
-            nums = [to_number(x) for x in text_df.iloc[i].tolist()]
-            nums = [x for x in nums if x is not None]
-            if not nums:
-                continue
-
-            total = nums[0]
-            month_values = nums[1:13]
-
-            row_data = {
-                "equipment": equipment or "UNKNOWN",
-                "reported_total": total,
-            }
-            for idx, m in enumerate(MONTHS):
-                row_data[f"reported_{m.lower()}"] = month_values[idx] if idx < len(month_values) else None
-
-            rows.append(row_data)
-
-    out = pd.DataFrame(rows)
-    if out.empty:
-        return out
-
-    out = out.drop_duplicates(subset=["equipment"], keep="first").reset_index(drop=True)
-    return out
-
-
-def parse_pms_detail(df: pd.DataFrame) -> pd.DataFrame:
-    header_row = find_pms_header_row(df)
-    if header_row is None:
-        raise ReconError("Could not locate the PMS item header row.")
-
-    columns = [normalize_text(x) for x in df.iloc[header_row].tolist()]
-    ncols = len(columns)
-    col_idx = {name: idx for idx, name in enumerate(columns) if name}
-
-    code_col = col_idx.get("Code No")
-    item_col = col_idx.get("ITEMS")
-    cur_col = col_idx.get("CURRENT OPERATING HOURS")
-
-    if code_col is None or item_col is None or cur_col is None:
-        raise ReconError("Required PMS columns are missing.")
-
-    month_cols = {}
-    for m in MONTHS:
-        if m in col_idx:
-            month_cols[m] = col_idx[m]
-
-    records = []
-    current_group = ""
-
-    for i in range(header_row + 1, len(df)):
-        row = df.iloc[i].tolist()
-
-        code = normalize_text(row[code_col]) if code_col < ncols else ""
-        item = normalize_text(row[item_col]) if item_col < ncols else ""
-
-        if not code and item and not re.search(r"\d", item):
-            current_group = item
-
-        if not code:
-            continue
-
-        if not re.match(r"^[A-Z]{2,4}-\d{2}(?:\.\d+|-\d+)?(?:-\d+)?$", code, flags=re.IGNORECASE):
-            if not re.match(r"^[A-Z]{2,4}-\d{2}-\d{2}$", code, flags=re.IGNORECASE):
-                continue
-
-        current_hours = to_number(row[cur_col]) if cur_col < ncols else None
-        month_vals = {m: (to_number(row[idx]) if idx < ncols else None) for m, idx in month_cols.items()}
-
-        rec = {
-            "key_type": "detail",
-            "code": code.upper(),
-            "item": item,
-            "item_norm": normalize_name(item),
-            "group": current_group,
-            "group_norm": normalize_name(current_group),
-            "reported_current_hours": current_hours,
-        }
-
-        for m in MONTHS:
-            rec[f"reported_{m.lower()}"] = month_vals.get(m)
-
-        records.append(rec)
-
-    out = pd.DataFrame(records)
-    if out.empty:
-        raise ReconError("No PMS detail rows were parsed.")
-
-    out = out.drop_duplicates(subset=["code"], keep="first").reset_index(drop=True)
-    return out
-
-
-def parse_me_dg_main_parts_log(df: pd.DataFrame) -> pd.DataFrame:
-    month_header_row = find_month_header_row(df)
-    if month_header_row is None:
-        raise ReconError("Could not locate the month header row in the running-hours report.")
-
-    records = []
-    current_equipment = ""
-
-    for i in range(month_header_row + 1, len(df)):
-        row = df.iloc[i].tolist()
-
-        first = normalize_text(row[0]) if len(row) > 0 else ""
-        second = normalize_text(row[1]) if len(row) > 1 else ""
-
-        if second and any(
-            tag in second.upper()
-            for tag in [
-                "MAIN ENGINE TYPE",
-                "DIESEL GENERATOR NO 1 TYPE",
-                "DIESEL GENERATOR NO 2 TYPE",
-                "DIESEL GENERATOR NO 3 TYPE",
-                "DIESEL GENERATOR NO 4 TYPE",
-            ]
-        ):
-            current_equipment = second.upper().replace(" TYPE", "")
-            continue
-
-        if not first and not second:
-            continue
-
-        nums = [to_number(x) for x in row]
-        nums = [x for x in nums if x is not None]
-
-        if len(nums) < 4:
-            continue
-
-        name = first or second
-        upper_name = name.upper()
-
-        if upper_name in {"STANDARD", "UNDERSIZE"}:
-            continue
-
-        total = nums[0]
-        month_vals = nums[1:13]
-
-        rec = {
-            "key_type": "detail",
-            "code": None,
-            "item": name,
-            "item_norm": normalize_name(name),
-            "group": current_equipment,
-            "group_norm": normalize_name(current_equipment),
-            "reported_current_hours": total,
-        }
-
-        for idx, m in enumerate(MONTHS):
-            rec[f"reported_{m.lower()}"] = month_vals[idx] if idx < len(month_values) else None
-
-        records.append(rec)
-
-    out = pd.DataFrame(records)
-    if out.empty:
-        raise ReconError("No detail lines were parsed from the running-hours report.")
-
-    return out
-
-
-def build_report_summary(detail_df: pd.DataFrame) -> pd.DataFrame:
-    summaries = []
-
-    for group, sub in detail_df.groupby("group_norm", dropna=False):
-        gname = sub["group"].dropna().iloc[0] if sub["group"].notna().any() else ""
-        unique_vals = sub["reported_current_hours"].dropna().unique().tolist()
-        total = unique_vals[0] if len(unique_vals) == 1 else None
-
-        row = {"equipment": gname or group or "UNKNOWN", "reported_total": total}
-
-        for m in MONTHS:
-            vals = sub[f"reported_{m.lower()}"]
-            uniq = vals.dropna().unique().tolist()
-            row[f"reported_{m.lower()}"] = uniq[0] if len(uniq) == 1 else None
-
-        summaries.append(row)
-
-    return pd.DataFrame(summaries)
-
-
-def parse_report(file_bytes: bytes, source_name: str) -> ParseResult:
-    sheets = read_excel_sheets(file_bytes)
-    pms_sheet = detect_sheet_name(sheets, ["PMS"])
-    log_sheet = detect_sheet_name(sheets, ["ME", "DG", "MAIN", "PARTS", "LOG"])
-
-    if pms_sheet is None:
-        raise ReconError("The workbook does not contain a PMS sheet.")
-
-    pms_df = sheets[pms_sheet]
-    detail = parse_pms_detail(pms_df)
-    summary = extract_pms_summary(pms_df)
-
-    if log_sheet is not None:
-        log_detail = parse_me_dg_main_parts_log(sheets[log_sheet])
-        if summary.empty:
-            summary = build_report_summary(log_detail)
-
-    return ParseResult(detail=detail, summary=summary, source_name=source_name)
-
-
-def parse_running_report(file_bytes: bytes, source_name: str) -> ParseResult:
-    sheets = read_excel_sheets(file_bytes)
-    log_sheet = detect_sheet_name(sheets, ["ME", "DG", "MAIN", "PARTS", "LOG"])
-    pms_sheet = detect_sheet_name(sheets, ["PMS"])
-
-    detail = pd.DataFrame()
-    summary = pd.DataFrame()
-
-    if log_sheet is not None:
-        detail = parse_me_dg_main_parts_log(sheets[log_sheet])
-        summary = build_report_summary(detail)
-
-    if detail.empty and pms_sheet is not None:
-        detail = parse_pms_detail(sheets[pms_sheet])
-        summary = extract_pms_summary(sheets[pms_sheet])
-
-    if detail.empty:
-        raise ReconError("Could not parse a running-hours report from the uploaded file.")
-
-    return ParseResult(detail=detail, summary=summary, source_name=source_name)
-
-
-def equipment_alias(text: str) -> str:
-    t = normalize_name(text)
-    replacements = {
-        "DIESEL GENERATOR NO 1": "DG1",
-        "DIESEL GENERATOR NO 2": "DG2",
-        "DIESEL GENERATOR NO 3": "DG3",
-        "DIESEL GENERATOR NO 4": "DG4",
-        "MAIN ENGINE": "ME",
-        "DIESEL GENERATOR NO1": "DG1",
-        "DIESEL GENERATOR NO2": "DG2",
-        "DIESEL GENERATOR NO3": "DG3",
-        "DIESEL GENERATOR NO4": "DG4",
-    }
-    for src, tgt in replacements.items():
-        t = t.replace(src, tgt)
-    return t.strip()
-
-
-def infer_family_from_code(code: Optional[str]) -> str:
-    if not code:
+    s = name.lower().replace(".", "").strip()
+    return MONTH_MAP.get(s)
+
+def pretty_month(dt):
+    if pd.isna(dt):
         return ""
-    code = code.upper()
+    return dt.strftime("%b-%y")
+
+def infer_entity_from_code(code):
+    code = clean_text(code).upper()
     if code.startswith("ME-"):
         return "ME"
-    if code.startswith("DG-01"):
+    if code.startswith("DG-01") or code.startswith("DG1") or "DG NO1" in code or "DG NO.1" in code:
         return "DG1"
-    if code.startswith("DG-02"):
+    if code.startswith("DG-02") or code.startswith("DG2") or "DG NO2" in code or "DG NO.2" in code:
         return "DG2"
-    if code.startswith("DG-03"):
+    if code.startswith("DG-03") or code.startswith("DG3") or "DG NO3" in code or "DG NO.3" in code:
         return "DG3"
-    if code.startswith("DG-04"):
+    if code.startswith("DG-04") or code.startswith("DG4") or "DG NO4" in code or "DG NO.4" in code:
         return "DG4"
-    return ""
+    return None
 
+def infer_entity_from_item_or_section(code, item, current_section):
+    text = f"{clean_text(code)} {clean_text(item)} {clean_text(current_section)}".upper()
+    if "MAIN ENGINE" in text or text.startswith("ME-"):
+        return "ME"
+    if "DIESEL GENERATOR NO 1" in text or "DIESEL GENERATOR NO.1" in text or "DG NO1" in text or "DG NO.1" in text:
+        return "DG1"
+    if "DIESEL GENERATOR NO 2" in text or "DIESEL GENERATOR NO.2" in text or "DG NO2" in text or "DG NO.2" in text:
+        return "DG2"
+    if "DIESEL GENERATOR NO 3" in text or "DIESEL GENERATOR NO.3" in text or "DG NO3" in text or "DG NO.3" in text:
+        return "DG3"
+    if "DIESEL GENERATOR NO 4" in text or "DIESEL GENERATOR NO.4" in text or "DG NO4" in text or "DG NO.4" in text:
+        return "DG4"
+    return infer_entity_from_code(code)
 
-def enrich_pms_keys(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    out["family"] = out["code"].apply(infer_family_from_code)
-    out["cyl_no"] = out["item"].astype(str).str.extract(r"(?:NO\.?|NO)\s*(\d+)", expand=False)
-    out["match_name"] = out["item_norm"]
+def parse_interval_to_hours(interval_a, interval_b=None, estimated_per_year=5040):
+    candidates = [interval_a, interval_b]
+    for val in candidates:
+        if pd.isna(val):
+            continue
+        s = str(val).strip().upper()
+        if s == "":
+            continue
+
+        n = safe_num(s)
+        if pd.notna(n):
+            return float(n)
+
+        m = re.match(r"(\d+(?:\.\d+)?)\s*(YEAR|YEARS|MONTH|MONTHS|DAY|DAYS)", s)
+        if m:
+            qty = float(m.group(1))
+            unit = m.group(2)
+            if "YEAR" in unit:
+                return estimated_per_year * qty
+            if "MONTH" in unit:
+                return estimated_per_year / 12 * qty
+            if "DAY" in unit:
+                return estimated_per_year / 365 * qty
+
+        if s == "MONTHLY":
+            return estimated_per_year / 12
+
+    return np.nan
+
+def estimate_next_date(last_date, current_hours, interval_hours, estimated_per_year=5040):
+    if pd.isna(last_date) or pd.isna(current_hours) or pd.isna(interval_hours) or estimated_per_year <= 0:
+        return pd.NaT
+    remaining = interval_hours - current_hours
+    if remaining <= 0:
+        return last_date
+    days_needed = remaining / estimated_per_year * 365
+    return last_date + pd.to_timedelta(days_needed, unit="D")
+
+# =========================================================
+# Daily hours parser
+# =========================================================
+
+def parse_daily_operating_hours(xls):
+    raw = pd.read_excel(xls, sheet_name="DAILY OPERATING HOURS", header=None)
+    raw = raw.copy()
+
+    data_rows = []
+    current_date = None
+
+    for i in range(len(raw)):
+        row = raw.iloc[i].tolist()
+        row_txt = [clean_text(x) for x in row]
+
+        date_val = row[0] if len(row) > 0 else None
+        date_parsed = parse_date_flexible(date_val)
+
+        if pd.notna(date_parsed):
+            nums = [safe_num(x) for x in row]
+            data_rows.append({
+                "date": date_parsed,
+                "me_hrs": nums[1] if len(nums) > 1 else np.nan,
+                "dg1_hrs": nums[4] if len(nums) > 4 else np.nan,
+                "dg2_hrs": nums[6] if len(nums) > 6 else np.nan,
+                "dg3_hrs": nums[8] if len(nums) > 8 else np.nan,
+                "dg4_hrs": nums[10] if len(nums) > 10 else np.nan,
+            })
+
+    df = pd.DataFrame(data_rows)
+    if df.empty:
+        return df, pd.DataFrame()
+
+    for c in ["me_hrs", "dg1_hrs", "dg2_hrs", "dg3_hrs", "dg4_hrs"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    df["year"] = df["date"].dt.year
+    df["month"] = df["date"].dt.month
+
+    monthly = (
+        df.groupby(["year", "month"], as_index=False)[["me_hrs", "dg1_hrs", "dg2_hrs", "dg3_hrs", "dg4_hrs"]]
+        .sum()
+        .sort_values(["year", "month"])
+    )
+
+    return df, monthly
+
+# =========================================================
+# PMS parser
+# =========================================================
+
+def parse_pms_sheet(xls):
+    raw = pd.read_excel(xls, sheet_name="PMS", header=None)
+    raw = raw.replace({np.nan: ""})
+
+    rows = []
+    current_section = ""
+
+    for i in range(len(raw)):
+        vals = raw.iloc[i].tolist()
+        txt = [clean_text(v) for v in vals]
+
+        if len(txt) < 3:
+            continue
+
+        first = txt[0].upper()
+        second = txt[1].upper() if len(txt) > 1 else ""
+
+        if "MAIN ENGINE Type" in " ".join(txt):
+            current_section = "ME"
+        elif "DIESEL GENERATOR No 1" in " ".join(txt) or "DIESEL GENERATOR No.1" in " ".join(txt):
+            current_section = "DG1"
+        elif "DIESEL GENERATOR No 2" in " ".join(txt) or "DIESEL GENERATOR No.2" in " ".join(txt):
+            current_section = "DG2"
+        elif "DIESEL GENERATOR No 3" in " ".join(txt) or "DIESEL GENERATOR No.3" in " ".join(txt):
+            current_section = "DG3"
+        elif "DIESEL GENERATOR No 4" in " ".join(txt) or "DIESEL GENERATOR No.4" in " ".join(txt):
+            current_section = "DG4"
+
+        if re.match(r"^[A-Z]{2,3}-\d{2}-\d{2}$", first):
+            code = txt[0]
+            item = txt[1] if len(txt) > 1 else ""
+            job = txt[2] if len(txt) > 2 else ""
+            interval1 = txt[3] if len(txt) > 3 else ""
+            interval2 = txt[4] if len(txt) > 4 else ""
+            last_inspection = parse_date_flexible(vals[5] if len(vals) > 5 else "")
+            end_last_year_hours = safe_num(vals[6] if len(vals) > 6 else "")
+            current_oper_hours = safe_num(vals[7] if len(vals) > 7 else "")
+            est_next = parse_date_flexible(vals[8] if len(vals) > 8 else "")
+
+            month_vals = {}
+            for idx, m in enumerate(MONTH_COLS, start=9):
+                month_vals[m] = safe_num(vals[idx] if len(vals) > idx else "")
+
+            entity = infer_entity_from_item_or_section(code, item, current_section)
+
+            rows.append({
+                "code": code,
+                "item": item,
+                "job": job,
+                "interval_1": interval1,
+                "interval_2": interval2,
+                "last_inspection_date": last_inspection,
+                "oper_hours_end_last_year": end_last_year_hours,
+                "current_oper_hours_pms": current_oper_hours,
+                "estimated_next_inspection_pms": est_next,
+                "entity": entity,
+                **month_vals
+            })
+
+    return pd.DataFrame(rows)
+
+# =========================================================
+# Running logic
+# =========================================================
+
+def monthly_hours_since_date(monthly_df, entity_col, start_date, report_date):
+    if pd.isna(start_date) or pd.isna(report_date):
+        return 0.0, {}
+
+    start_date = pd.Timestamp(start_date).normalize()
+    report_date = pd.Timestamp(report_date).normalize()
+
+    md = monthly_df.copy()
+    md["month_start"] = pd.to_datetime(dict(year=md["year"], month=md["month"], day=1))
+    md["month_end"] = md["month_start"] + pd.offsets.MonthEnd(1)
+
+    total = 0.0
+    parts = {}
+
+    for _, r in md.iterrows():
+        ms = r["month_start"]
+        me = r["month_end"]
+
+        if me < start_date or ms > report_date:
+            continue
+
+        month_hours = r[entity_col]
+
+        # same-month start assumed to count from next month only for PMS pattern? no.
+        # Based on the workbook, if last OH is on 28-Feb-26, March accumulates 269 and February contributes 0. [file:49]
+        # So same-month contributions are ignored and accumulation starts from next month close.
+        if ms.year == start_date.year and ms.month == start_date.month:
+            contrib = 0.0
+        else:
+            contrib = month_hours
+
+        parts[f"{ms.year}-{ms.month:02d}"] = contrib
+        total += contrib
+
+    return total, parts
+
+def calculate_expected_hours(pms_df, monthly_df, report_date, estimated_per_year=5040):
+    out = pms_df.copy()
+    expected = []
+    mismatches = []
+    details = []
+    next_dates = []
+    intervals = []
+
+    for _, r in out.iterrows():
+        entity = r["entity"]
+        daily_col = ENTITY_TO_DAILY_COL.get(entity)
+        if not daily_col:
+            expected.append(np.nan)
+            mismatches.append(False)
+            details.append("")
+            next_dates.append(pd.NaT)
+            intervals.append(np.nan)
+            continue
+
+        last_date = r["last_inspection_date"]
+        exp_hours, parts = monthly_hours_since_date(monthly_df, daily_col, last_date, report_date)
+
+        pms_hours = r["current_oper_hours_pms"]
+        mismatch = False
+        if pd.notna(pms_hours):
+            mismatch = abs(exp_hours - pms_hours) > 0.5
+
+        int_hours = parse_interval_to_hours(r["interval_1"], r["interval_2"], estimated_per_year)
+        next_dt = estimate_next_date(last_date, exp_hours, int_hours, estimated_per_year)
+
+        expected.append(exp_hours)
+        mismatches.append(mismatch)
+        details.append(", ".join([f"{k}:{v:.0f}" for k, v in parts.items() if abs(v) > 0]))
+        next_dates.append(next_dt)
+        intervals.append(int_hours)
+
+    out["expected_hours"] = expected
+    out["mismatch"] = mismatches
+    out["calc_breakdown"] = details
+    out["interval_hours"] = intervals
+    out["estimated_next_by_app"] = next_dates
+    out["delta_hours"] = out["current_oper_hours_pms"] - out["expected_hours"]
+
     return out
 
+# =========================================================
+# UI
+# =========================================================
 
-def enrich_report_keys(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    out["family"] = out["group"].apply(equipment_alias)
-    out["cyl_no"] = out["item"].astype(str).str.extract(r"(?:NO\.?|NO)\s*(\d+)", expand=False)
-    out["match_name"] = out["item_norm"]
-    return out
+st.title("PMS Running Hours Checker")
+st.caption("Checks PMS current running hours against monthly operating hours and reset dates")
 
+uploaded_file = st.file_uploader("Upload PMS Excel file", type=["xlsx"])
 
-def match_details(report_df: pd.DataFrame, pms_df: pd.DataFrame) -> pd.DataFrame:
-    rep = enrich_report_keys(report_df)
-    pms = enrich_pms_keys(pms_df)
+default_report_date = pd.Timestamp("2026-03-31")
+report_date = st.date_input("Report date", value=default_report_date)
 
-    if rep.empty or pms.empty:
-        return pd.DataFrame()
+estimated_per_year = st.number_input("Estimated steaming hours per year", min_value=1000, max_value=10000, value=5040, step=10)
 
-    pms_code = pms[pms["code"].notna()].copy()
-
-    direct = rep.merge(
-        pms_code,
-        how="left",
-        left_on=["family", "match_name", "cyl_no"],
-        right_on=["family", "match_name", "cyl_no"],
-        suffixes=("_report", "_pms"),
-    )
-
-    unmatched = direct[direct["code"].isna()].copy()
-    matched = direct[direct["code"].notna()].copy()
-
-    if not unmatched.empty:
-        loose = unmatched[rep.columns].merge(
-            pms_code,
-            how="left",
-            left_on=["family", "match_name"],
-            right_on=["family", "match_name"],
-            suffixes=("_report", "_pms"),
-        )
-        matched = pd.concat([matched, loose[loose["code"].notna()]], ignore_index=True)
-        still_unmatched = loose[loose["code"].isna()][rep.columns].copy()
-    else:
-        still_unmatched = pd.DataFrame(columns=rep.columns)
-
-    result = matched.copy()
-
-    if not still_unmatched.empty:
-        for col in pms.columns:
-            if col not in result.columns:
-                result[col] = np.nan
-        for col in still_unmatched.columns:
-            if col not in result.columns:
-                result[col] = np.nan
-        result = pd.concat([result, still_unmatched[result.columns]], ignore_index=True)
-
-    return result
-
-
-def reconcile_summary(report_summary: pd.DataFrame, pms_summary: pd.DataFrame, tolerance: float) -> pd.DataFrame:
-    if report_summary.empty or pms_summary.empty:
-        return pd.DataFrame()
-
-    left = report_summary.copy()
-    right = pms_summary.copy()
-
-    left["equipment_key"] = left["equipment"].apply(equipment_alias)
-    right["equipment_key"] = right["equipment"].apply(equipment_alias)
-
-    merged = left.merge(right, on="equipment_key", how="outer", suffixes=("_report", "_pms"))
-    merged["equipment"] = merged["equipment_report"].fillna(merged["equipment_pms"])
-    merged["delta_total"] = merged["reported_total_report"] - merged["reported_total_pms"]
-
-    for m in MONTHS:
-        ml = f"reported_{m.lower()}_report"
-        mr = f"reported_{m.lower()}_pms"
-        merged[f"delta_{m.lower()}"] = merged[ml] - merged[mr]
-
-    merged["status"] = np.where(
-        merged["delta_total"].abs().fillna(np.inf) <= tolerance,
-        "match",
-        np.where(merged["delta_total"].isna(), "incomplete", "mismatch"),
-    )
-
-    order = ["equipment", "reported_total_report", "reported_total_pms", "delta_total"]
-    for m in MONTHS:
-        order += [f"reported_{m.lower()}_report", f"reported_{m.lower()}_pms", f"delta_{m.lower()}"]
-    order += ["status"]
-
-    return merged[order].sort_values(by=["status", "equipment"], na_position="last").reset_index(drop=True)
-
-
-def reconcile_detail(report_detail: pd.DataFrame, pms_detail: pd.DataFrame, tolerance: float) -> pd.DataFrame:
-    matched = match_details(report_detail, pms_detail)
-    if matched.empty:
-        return pd.DataFrame()
-
-    matched["report_hours"] = (
-        matched["reported_current_hours_report"]
-        if "reported_current_hours_report" in matched.columns
-        else matched.get("reported_current_hours")
-    )
-
-    if "reported_current_hours_pms" in matched.columns:
-        matched["pms_hours"] = matched["reported_current_hours_pms"]
-    else:
-        matched["pms_hours"] = matched.get("reported_current_hours")
-
-    matched["delta_hours"] = matched["report_hours"] - matched["pms_hours"]
-
-    matched["status"] = np.where(
-        matched["delta_hours"].abs().fillna(np.inf) <= tolerance,
-        "match",
-        np.where(matched["pms_hours"].isna(), "missing in PMS", "mismatch"),
-    )
-
-    report_item_col = "item_report" if "item_report" in matched.columns else "item"
-    report_group_col = "group_report" if "group_report" in matched.columns else "group"
-
-    out = pd.DataFrame(
-        {
-            "equipment": matched[report_group_col],
-            "report_item": matched[report_item_col],
-            "pms_code": matched.get("code"),
-            "pms_item": matched.get("item_pms", matched.get("item")),
-            "reported_hours": matched["report_hours"],
-            "pms_hours": matched["pms_hours"],
-            "delta_hours": matched["delta_hours"],
-            "status": matched["status"],
-        }
-    )
-
-    return out.sort_values(
-        by=["delta_hours"],
-        key=lambda s: s.abs(),
-        ascending=False,
-        na_position="last",
-    ).reset_index(drop=True)
-
-
-def dataframe_download(df: pd.DataFrame) -> bytes:
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="reconciliation")
-    output.seek(0)
-    return output.read()
-
-
-def render_metric_block(summary_df: pd.DataFrame, detail_df: pd.DataFrame):
-    total_rows = len(detail_df)
-    mismatches = int((detail_df["status"] == "mismatch").sum()) if not detail_df.empty else 0
-    matches = int((detail_df["status"] == "match").sum()) if not detail_df.empty else 0
-    missing = int((detail_df["status"] == "missing in PMS").sum()) if not detail_df.empty else 0
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Detail rows", f"{total_rows:,}")
-    c2.metric("Matches", f"{matches:,}")
-    c3.metric("Mismatches", f"{mismatches:,}")
-    c4.metric("Missing in PMS", f"{missing:,}")
-
-    if not summary_df.empty:
-        st.subheader("Equipment summary")
-        st.dataframe(summary_df, use_container_width=True, hide_index=True)
-
-
-def main():
-    st.title("PMS Running Hours Reconciliation")
-    st.caption("Compare reported running hours against PMS values and calculate the delta only.")
-
-    with st.sidebar:
-        st.header("Inputs")
-        tolerance = st.number_input(
-            "Tolerance (hrs)",
-            min_value=0.0,
-            value=DEFAULT_TOLERANCE,
-            step=0.01,
-            format="%.2f",
-        )
-        st.markdown(
-            "Upload a reported running-hours workbook and a PMS workbook. "
-            "If both datasets are in the same workbook, upload the same file twice."
-        )
-        report_file = st.file_uploader("Reported running-hours workbook", type=["xlsx", "xlsm", "xls"])
-        pms_file = st.file_uploader("PMS workbook", type=["xlsx", "xlsm", "xls"])
-
+if uploaded_file is not None:
     try:
-        if report_file is None or pms_file is None:
-            st.info("Upload both files to start the reconciliation.")
-            return
+        xls = pd.ExcelFile(uploaded_file)
 
-        report_bytes, report_name = report_file.read(), report_file.name
-        pms_bytes, pms_name = pms_file.read(), pms_file.name
+        daily_df, monthly_df = parse_daily_operating_hours(xls)
+        pms_df = parse_pms_sheet(xls)
 
-        report = parse_running_report(report_bytes, report_name)
-        pms = parse_report(pms_bytes, pms_name)
+        if daily_df.empty or pms_df.empty:
+            st.error("Could not parse required sheets or data structure.")
+            st.stop()
 
-        summary_df = reconcile_summary(report.summary, pms.summary, tolerance)
-        detail_df = reconcile_detail(report.detail, pms.detail, tolerance)
+        result_df = calculate_expected_hours(
+            pms_df=pms_df,
+            monthly_df=monthly_df,
+            report_date=pd.Timestamp(report_date),
+            estimated_per_year=estimated_per_year
+        )
 
-        render_metric_block(summary_df, detail_df)
+        st.success("Workbook parsed successfully")
 
-        tab1, tab2, tab3 = st.tabs(["Detail reconciliation", "Summary reconciliation", "Downloads"])
+        tab1, tab2, tab3, tab4 = st.tabs(["Summary", "Mismatches", "All Items", "Monthly Hours"])
 
         with tab1:
-            st.subheader("Detail reconciliation")
-            if detail_df.empty:
-                st.warning("No detail reconciliation rows could be generated.")
-            else:
-                status_options = sorted(detail_df["status"].dropna().unique().tolist())
-                equipment_options = sorted(detail_df["equipment"].dropna().astype(str).unique().tolist())
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Parsed PMS Items", len(result_df))
+            c2.metric("Mismatches", int(result_df["mismatch"].sum()))
+            c3.metric("ME Mar-26 Hours", int(monthly_df.query("year==2026 and month==3")["me_hrs"].sum()) if not monthly_df.query("year==2026 and month==3").empty else 0)
+            c4.metric("DG1 Mar-26 Hours", int(monthly_df.query("year==2026 and month==3")["dg1_hrs"].sum()) if not monthly_df.query("year==2026 and month==3").empty else 0)
 
-                status_filter = st.multiselect(
-                    "Filter status",
-                    options=status_options,
-                    default=status_options,
-                )
-                equipment_filter = st.multiselect(
-                    "Filter equipment",
-                    options=equipment_options,
-                    default=equipment_options,
-                )
-
-                view = detail_df.copy()
-                if status_filter:
-                    view = view[view["status"].isin(status_filter)]
-                if equipment_filter:
-                    view = view[view["equipment"].astype(str).isin(equipment_filter)]
-
-                st.dataframe(view, use_container_width=True, hide_index=True)
+            st.markdown("### Known examples from your file")
+            ex = result_df[result_df["code"].isin(["ME-02-01", "ME-02-04", "ME-02-06", "ME-02-08"])][[
+                "code", "item", "last_inspection_date", "current_oper_hours_pms", "expected_hours", "delta_hours", "calc_breakdown"
+            ]]
+            st.dataframe(ex, use_container_width=True)
 
         with tab2:
-            st.subheader("Summary reconciliation")
-            if summary_df.empty:
-                st.warning("No summary reconciliation rows could be generated.")
-            else:
-                st.dataframe(summary_df, use_container_width=True, hide_index=True)
+            mismatch_df = result_df[result_df["mismatch"]].copy()
+            st.dataframe(
+                mismatch_df[[
+                    "entity", "code", "item", "last_inspection_date",
+                    "current_oper_hours_pms", "expected_hours", "delta_hours",
+                    "interval_1", "interval_2", "estimated_next_inspection_pms",
+                    "estimated_next_by_app", "calc_breakdown"
+                ]].sort_values(["entity", "code"]),
+                use_container_width=True
+            )
 
         with tab3:
-            st.subheader("Downloads")
-            if not detail_df.empty:
-                st.download_button(
-                    "Download detail reconciliation.xlsx",
-                    data=dataframe_download(detail_df),
-                    file_name="detail_reconciliation.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-            if not summary_df.empty:
-                st.download_button(
-                    "Download summary reconciliation.xlsx",
-                    data=dataframe_download(summary_df),
-                    file_name="summary_reconciliation.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
+            filt_entity = st.selectbox("Filter entity", ["ALL", "ME", "DG1", "DG2", "DG3", "DG4"])
+            filt_text = st.text_input("Search code/item", "")
 
-    except ReconError as e:
-        st.error(str(e))
+            view = result_df.copy()
+            if filt_entity != "ALL":
+                view = view[view["entity"] == filt_entity]
+            if filt_text.strip():
+                patt = filt_text.strip().upper()
+                view = view[
+                    view["code"].str.upper().str.contains(patt, na=False) |
+                    view["item"].str.upper().str.contains(patt, na=False)
+                ]
+
+            st.dataframe(
+                view[[
+                    "entity", "code", "item", "job", "interval_1", "interval_2",
+                    "last_inspection_date", "current_oper_hours_pms", "expected_hours",
+                    "delta_hours", "mismatch", "estimated_next_inspection_pms",
+                    "estimated_next_by_app", "calc_breakdown"
+                ]].sort_values(["entity", "code"]),
+                use_container_width=True
+            )
+
+        with tab4:
+            monthly_show = monthly_df.copy()
+            monthly_show["month_name"] = monthly_show["month"].map({
+                1:"Jan", 2:"Feb", 3:"Mar", 4:"Apr", 5:"May", 6:"Jun",
+                7:"Jul", 8:"Aug", 9:"Sep", 10:"Oct", 11:"Nov", 12:"Dec"
+            })
+            st.dataframe(monthly_show[["year", "month", "month_name", "me_hrs", "dg1_hrs", "dg2_hrs", "dg3_hrs", "dg4_hrs"]], use_container_width=True)
+
+        # export
+        export_cols = [
+            "entity", "code", "item", "job", "interval_1", "interval_2",
+            "last_inspection_date", "current_oper_hours_pms", "expected_hours",
+            "delta_hours", "mismatch", "estimated_next_inspection_pms",
+            "estimated_next_by_app", "calc_breakdown"
+        ]
+        export_df = result_df[export_cols].copy()
+
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="xlsxwriter", datetime_format="dd-mm-yyyy") as writer:
+            export_df.to_excel(writer, index=False, sheet_name="check_results")
+            monthly_df.to_excel(writer, index=False, sheet_name="monthly_hours")
+            pms_df.to_excel(writer, index=False, sheet_name="parsed_pms")
+
+            wb = writer.book
+            ws = writer.sheets["check_results"]
+
+            red_fmt = wb.add_format({"bg_color": "#FFC7CE", "font_color": "#9C0006"})
+            green_fmt = wb.add_format({"bg_color": "#C6EFCE", "font_color": "#006100"})
+            num_fmt = wb.add_format({"num_format": "0"})
+            date_fmt = wb.add_format({"num_format": "dd-mm-yyyy"})
+
+            ws.set_column("A:A", 10)
+            ws.set_column("B:B", 14)
+            ws.set_column("C:C", 38)
+            ws.set_column("D:D", 12)
+            ws.set_column("E:F", 14)
+            ws.set_column("G:G", 14, date_fmt)
+            ws.set_column("H:J", 14, num_fmt)
+            ws.set_column("K:K", 10)
+            ws.set_column("L:M", 16, date_fmt)
+            ws.set_column("N:N", 30)
+
+            mismatch_col = export_df.columns.get_loc("mismatch")
+            ws.conditional_format(1, mismatch_col, len(export_df), mismatch_col, {
+                "type": "cell",
+                "criteria": "==",
+                "value": True,
+                "format": red_fmt
+            })
+            ws.conditional_format(1, mismatch_col, len(export_df), mismatch_col, {
+                "type": "cell",
+                "criteria": "==",
+                "value": False,
+                "format": green_fmt
+            })
+
+        st.download_button(
+            label="Download check results",
+            data=output.getvalue(),
+            file_name="pms_running_hours_check.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
     except Exception as e:
         st.exception(e)
 
+else:
+    st.info("Upload the PMS Excel workbook to start checking results.")
 
-if __name__ == "__main__":
-    main()
+    st.markdown("""
+### What this app checks
+
+- Reads **DAILY OPERATING HOURS** monthly totals like ME March = 269, DG1 March = 554, DG2 March = 241, DG3 March = 251
+- Reads **PMS** rows such as `ME-02-01`, `ME-02-04`, etc.
+- Recomputes running hours from the **last inspection / OH date**
+- Flags mismatches between PMS value and recalculated value
+- Exports a clean Excel mismatch report
+
+### Expected examples for your March 2026 file
+
+- `ME-02-01` should be **269** because last OH is **28-Feb-26**
+- `ME-02-04` should be **846** because last inspection is **18-Jan-26**, so Feb 577 + Mar 269
+- Same logic applies to `ME-02-06` and `ME-02-08`
+""")
