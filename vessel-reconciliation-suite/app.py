@@ -60,38 +60,31 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2. THE SURGICAL EXTRACTION ENGINES
+# 2. THE REVERSE-ANCHOR EXTRACTION ENGINES
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @st.cache_data(show_spinner=False)
 def parse_daily_hours_excel(file_bytes):
-    """The Forward-Fill Plumb Line Engine."""
+    """The Reverse-Anchor Plumb Line Engine."""
     try:
         df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name='DAILY OPERATING HOURS', header=None, engine='openpyxl', dtype=str)
     except:
         df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl', dtype=str)
         
     col_map = {}
-    header_row_1 = -1
     header_row_2 = -1
     
-    # 1. Sweep vertically to find the hierarchical headers
-    for i in range(min(50, len(df_raw))):
-        row_vals = [str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)]
-        if any('MAIN ENGINE' in v for v in row_vals) or any('GENERATOR' in v for v in row_vals):
-            header_row_1 = i
-            # Look at the next few rows for the specific "OPERATING HOURS" sub-headers
-            for j in range(1, 4):
-                if i + j < len(df_raw):
-                    sub_vals = [str(x).upper() for x in df_raw.iloc[i+j].values if pd.notna(x)]
-                    if any('OPERATING HOURS' in v for v in sub_vals):
-                        header_row_2 = i + j
-                        break
+    # 1. Sweep vertically to find the exact row that contains DATE and OPERATING HOURS
+    for i in range(min(60, len(df_raw))):
+        row_str = " ".join([str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)])
+        if 'DATE' in row_str and ('OPERATING' in row_str or 'HOURS' in row_str):
+            header_row_2 = i
             break
 
-    # 2. Apply Forward-Fill logic to map parents to sub-columns
-    if header_row_1 != -1 and header_row_2 != -1:
-        # Forward fill the parent row to eliminate the merged-cell phantom gap
+    # 2. Reverse-Anchor: Look one row up to establish the Parents and forward-fill
+    if header_row_2 != -1:
+        header_row_1 = max(0, header_row_2 - 1)
+        
         parent_headers = df_raw.iloc[header_row_1].ffill().fillna("").astype(str).str.upper()
         sub_headers = df_raw.iloc[header_row_2].fillna("").astype(str).str.upper()
         
@@ -99,21 +92,20 @@ def parse_daily_hours_excel(file_bytes):
             parent = parent_headers.iloc[col_idx]
             sub = sub_headers.iloc[col_idx]
             
-            if 'DATE' in parent or 'DATE' in sub:
+            if 'DATE' in sub or 'DATE' in parent or 'DAY' in sub:
                 col_map['Date'] = col_idx
-            elif 'OPERATING HOURS' in sub:
-                if 'MAIN ENGINE' in parent:
+            elif 'OPERATING' in sub or 'HOURS' in sub or 'RUN' in sub:
+                if 'MAIN' in parent or 'M/E' in parent or 'ME ' in parent:
                     col_map['ME_Hours'] = col_idx
-                elif 'GENERATOR NO: 1' in parent or 'GENERATOR NO. 1' in parent:
+                elif 'GEN' in parent and ('1' in parent or 'ONE' in parent):
                     col_map['DG1_Hours'] = col_idx
-                elif 'GENERATOR NO: 2' in parent or 'GENERATOR NO. 2' in parent:
+                elif 'GEN' in parent and ('2' in parent or 'TWO' in parent):
                     col_map['DG2_Hours'] = col_idx
-                elif 'GENERATOR NO: 3' in parent or 'GENERATOR NO. 3' in parent:
+                elif 'GEN' in parent and ('3' in parent or 'THREE' in parent):
                     col_map['DG3_Hours'] = col_idx
 
     # 3. Extract Timeline Data
     if 'Date' in col_map:
-        # Start data extraction below the sub-header row
         df = df_raw.iloc[header_row_2 + 1:].copy()
         clean_df = pd.DataFrame()
         clean_df['Date'] = pd.to_datetime(df.iloc[:, col_map['Date']], errors='coerce', dayfirst=True)
@@ -125,9 +117,9 @@ def parse_daily_hours_excel(file_bytes):
             else:
                 clean_df[sys_col] = 0.0
                 
-        return clean_df.dropna(subset=['Date']).reset_index(drop=True), df_raw
+        return clean_df.dropna(subset=['Date']).reset_index(drop=True), df_raw, col_map
     
-    return pd.DataFrame(), df_raw
+    return pd.DataFrame(), df_raw, col_map
 
 @st.cache_data(show_spinner=False)
 def parse_pms_binary_doc(file_bytes):
@@ -165,7 +157,6 @@ def parse_pms_binary_doc(file_bytes):
             comp_name = cell
             dates, hours = [], []
             
-            # Phase 2a: Scan ahead for the '1' anchor (Overhaul Dates)
             j = i + 1
             while j < min(i + 15, len(cells)):
                 if cells[j].strip() == '1':
@@ -174,7 +165,6 @@ def parse_pms_binary_doc(file_bytes):
                     break
                 j += 1
                 
-            # Phase 2b: Scan ahead for the '2' anchor (Running Hours)
             j = i + 1
             while j < min(i + 30, len(cells)):
                 if cells[j].strip() == '2':
@@ -186,13 +176,11 @@ def parse_pms_binary_doc(file_bytes):
             # Phase 3: Horizontal Cylinder Matrix Resolver
             for idx, su in enumerate(sub_units):
                 if idx < len(dates) and idx < len(hours):
-                    # Data Sanitization (strips brackets like '[9443')
                     d_match = re.search(r'\b(\d{1,2}[-/\.]\w{2,9}[-/\.]?\d{2,4}|\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})\b', dates[idx])
                     h_clean = re.sub(r'[^\d.]', '', hours[idx])
                     
                     if d_match and h_clean:
                         curr_timeline = target_timeline if system == 'ME' else f"{su}_Hours"
-                        
                         extracted_data.append({
                             'System': system,
                             'Target_Timeline': curr_timeline,
@@ -227,7 +215,7 @@ st.markdown(f"""
     <div class="hero-badge">
         <span style="color:#00e0b0">KERNEL</span>&ensp;Zero-Trust Triangulation<br>
         <span style="color:#00e0b0">DECODER</span>&ensp;State-Machine Matrix<br>
-        <span style="color:#fff">BUILD</span>&ensp;v10.0.2 Zenith Edition
+        <span style="color:#fff">BUILD</span>&ensp;v10.0.3 Anchor Edition
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -244,14 +232,12 @@ with col2:
 if pms_file and logs_file:
     with st.spinner("Executing State-Machine Extractor & Triangulation..."):
         try:
-            # 1. Isolate the Extractions
             pms_df, diag_pms = parse_pms_binary_doc(pms_file.getvalue())
-            timeline_df, diag_timeline = parse_daily_hours_excel(logs_file.getvalue())
+            timeline_df, diag_timeline, col_map = parse_daily_hours_excel(logs_file.getvalue())
             
             total_days = len(timeline_df) if not timeline_df.empty else 0
             audit_results = []
             
-            # 2. Execute the Triangulation Math
             if not timeline_df.empty and not pms_df.empty:
                 for _, row in pms_df.iterrows():
                     comp = row['Component']
@@ -341,13 +327,12 @@ if pms_file and logs_file:
                     csv_data = res_df.to_csv(index=False).encode('utf-8')
                     st.download_button("⬇️ EXPORT FORENSIC LEDGER (.CSV)", data=csv_data, file_name=f"Reconciliation_Audit.csv", mime='text/csv')
                 else:
-                    st.error("Audit Could Not Complete. Please check the Diagnostics tab to ensure the files contain the correct data.")
+                    st.error("Audit Could Not Complete. Check the Diagnostics tab to ensure the files contain the correct data.")
 
             with t2:
                 if audit_results:
                     st.markdown("### Claimed vs Verified Running Hours")
                     st.markdown("<span style='color:#64748b; font-size:0.85rem;'>Native Streamlit rendering (Zero external chart dependencies)</span><br><br>", unsafe_allow_html=True)
-                    
                     plot_df = res_df[['Component', 'Claimed (Doc)', 'Verified (Excel)']].set_index('Component')
                     st.bar_chart(plot_df, color=["#c9a84c", "#00e0b0"], height=500)
 
@@ -365,7 +350,9 @@ if pms_file and logs_file:
                 with c2:
                     st.markdown("<div style='color:#8ba1b5; font-size:0.8rem; font-weight:600; margin-bottom:10px;'>RAW TIMELINE MATRIX (.xlsx)</div>", unsafe_allow_html=True)
                     if diag_timeline is not None and not diag_timeline.empty:
-                        st.dataframe(diag_timeline.head(50), use_container_width=True, height=500)
+                        # NEW: Display exactly how the engine mapped the columns
+                        st.code(f"Engine Column Map Generated:\n{col_map}", language="json")
+                        st.dataframe(diag_timeline.head(50), use_container_width=True, height=450)
                     else:
                         st.warning("No data extracted from the Timeline file.")
 
