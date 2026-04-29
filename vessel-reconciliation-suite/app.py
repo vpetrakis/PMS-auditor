@@ -60,53 +60,64 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2. THE REVERSE-ANCHOR EXTRACTION ENGINES
+# 2. THE X-RAY MATRIX EXTRACTION ENGINES
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @st.cache_data(show_spinner=False)
 def parse_daily_hours_excel(file_bytes):
-    """The Reverse-Anchor Plumb Line Engine."""
-    try:
-        df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name='DAILY OPERATING HOURS', header=None, engine='openpyxl', dtype=str)
-    except:
-        df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl', dtype=str)
-        
-    col_map = {}
-    header_row_2 = -1
+    """The X-Ray Matrix Engine: Global Forward-Fill to crush hidden rows."""
     
-    # 1. Sweep vertically to find the exact row that contains DATE and OPERATING HOURS
-    for i in range(min(60, len(df_raw))):
-        row_str = " ".join([str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)])
-        if 'DATE' in row_str and ('OPERATING' in row_str or 'HOURS' in row_str):
-            header_row_2 = i
+    # 1. Force identify the correct sheet
+    xls = pd.ExcelFile(io.BytesIO(file_bytes), engine='openpyxl')
+    target_sheet = xls.sheet_names[0]
+    for sheet in xls.sheet_names:
+        if 'DAILY' in sheet.upper() or 'OPERATING' in sheet.upper():
+            target_sheet = sheet
             break
 
-    # 2. Reverse-Anchor: Look one row up to establish the Parents and forward-fill
-    if header_row_2 != -1:
-        header_row_1 = max(0, header_row_2 - 1)
+    df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=target_sheet, header=None, dtype=str)
+    
+    # 2. Build the X-Ray Block (Top 30 rows)
+    header_block = df_raw.head(30).copy()
+    
+    # Forward-fill merged cells horizontally, then vertically
+    header_block = header_block.ffill(axis=1).ffill(axis=0)
+    
+    col_map = {}
+    data_start_row = 0
+    
+    # 3. Scan the X-Ray block for combined column signatures
+    for col_idx in range(len(header_block.columns)):
+        # Join all text in the column's header block into a single DNA string
+        col_text = " ".join([str(x).upper() for x in header_block.iloc[:, col_idx].values if pd.notna(x)])
         
-        parent_headers = df_raw.iloc[header_row_1].ffill().fillna("").astype(str).str.upper()
-        sub_headers = df_raw.iloc[header_row_2].fillna("").astype(str).str.upper()
-        
-        for col_idx in range(len(df_raw.columns)):
-            parent = parent_headers.iloc[col_idx]
-            sub = sub_headers.iloc[col_idx]
+        if 'DATE' in col_text or 'DAY' in col_text:
+            if 'Date' not in col_map: col_map['Date'] = col_idx
             
-            if 'DATE' in sub or 'DATE' in parent or 'DAY' in sub:
-                col_map['Date'] = col_idx
-            elif 'OPERATING' in sub or 'HOURS' in sub or 'RUN' in sub:
-                if 'MAIN' in parent or 'M/E' in parent or 'ME ' in parent:
-                    col_map['ME_Hours'] = col_idx
-                elif 'GEN' in parent and ('1' in parent or 'ONE' in parent):
-                    col_map['DG1_Hours'] = col_idx
-                elif 'GEN' in parent and ('2' in parent or 'TWO' in parent):
-                    col_map['DG2_Hours'] = col_idx
-                elif 'GEN' in parent and ('3' in parent or 'THREE' in parent):
-                    col_map['DG3_Hours'] = col_idx
+        if 'OPERATING' in col_text or 'HOURS' in col_text or 'RUN' in col_text:
+            if 'MAIN' in col_text or 'M/E' in col_text or 'ME ' in col_text:
+                col_map['ME_Hours'] = col_idx
+            elif 'GEN' in col_text and ('1' in col_text or 'ONE' in col_text):
+                col_map['DG1_Hours'] = col_idx
+            elif 'GEN' in col_text and ('2' in col_text or 'TWO' in col_text):
+                col_map['DG2_Hours'] = col_idx
+            elif 'GEN' in col_text and ('3' in col_text or 'THREE' in col_text):
+                col_map['DG3_Hours'] = col_idx
 
-    # 3. Extract Timeline Data
+    # 4. Extract Data safely by mathematically identifying the first valid date
     if 'Date' in col_map:
-        df = df_raw.iloc[header_row_2 + 1:].copy()
+        date_col = df_raw.iloc[:, col_map['Date']]
+        for i in range(len(date_col)):
+            try:
+                # If pandas can convert it to a datetime, this is the start of the data
+                parsed = pd.to_datetime(date_col.iloc[i], errors='coerce', dayfirst=True)
+                if pd.notna(parsed):
+                    data_start_row = i
+                    break
+            except:
+                pass
+                
+        df = df_raw.iloc[data_start_row:].copy()
         clean_df = pd.DataFrame()
         clean_df['Date'] = pd.to_datetime(df.iloc[:, col_map['Date']], errors='coerce', dayfirst=True)
         
@@ -214,8 +225,8 @@ st.markdown(f"""
     </div>
     <div class="hero-badge">
         <span style="color:#00e0b0">KERNEL</span>&ensp;Zero-Trust Triangulation<br>
-        <span style="color:#00e0b0">DECODER</span>&ensp;State-Machine Matrix<br>
-        <span style="color:#fff">BUILD</span>&ensp;v10.0.3 Anchor Edition
+        <span style="color:#00e0b0">DECODER</span>&ensp;X-Ray Matrix Sweep<br>
+        <span style="color:#fff">BUILD</span>&ensp;v10.0.4 Ultimate Edition
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -230,7 +241,7 @@ with col2:
     logs_file = st.file_uploader("Upload Excel Timeline", type=["xlsx", "xls"], key="logs_box")
 
 if pms_file and logs_file:
-    with st.spinner("Executing State-Machine Extractor & Triangulation..."):
+    with st.spinner("Executing X-Ray Matrix Extractor & Triangulation..."):
         try:
             pms_df, diag_pms = parse_pms_binary_doc(pms_file.getvalue())
             timeline_df, diag_timeline, col_map = parse_daily_hours_excel(logs_file.getvalue())
@@ -348,9 +359,8 @@ if pms_file and logs_file:
                         st.warning("No data extracted from the Overhaul file.")
                         
                 with c2:
-                    st.markdown("<div style='color:#8ba1b5; font-size:0.8rem; font-weight:600; margin-bottom:10px;'>RAW TIMELINE MATRIX (.xlsx)</div>", unsafe_allow_html=True)
+                    st.markdown("<div style='color:#8ba1b5; font-size:0.8rem; font-weight:600; margin-bottom:10px;'>X-RAY TIMELINE MATRIX (.xlsx)</div>", unsafe_allow_html=True)
                     if diag_timeline is not None and not diag_timeline.empty:
-                        # NEW: Display exactly how the engine mapped the columns
                         st.code(f"Engine Column Map Generated:\n{col_map}", language="json")
                         st.dataframe(diag_timeline.head(50), use_container_width=True, height=450)
                     else:
