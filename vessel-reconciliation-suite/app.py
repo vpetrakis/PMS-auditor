@@ -65,70 +65,71 @@ st.markdown("""
 
 @st.cache_data(show_spinner=False)
 def parse_daily_hours_excel(file_bytes):
-    """The X-Ray Matrix Engine: Global Forward-Fill to crush hidden rows."""
-    
-    # 1. Force identify the correct sheet
-    xls = pd.ExcelFile(io.BytesIO(file_bytes), engine='openpyxl')
-    target_sheet = xls.sheet_names[0]
-    for sheet in xls.sheet_names:
-        if 'DAILY' in sheet.upper() or 'OPERATING' in sheet.upper():
-            target_sheet = sheet
-            break
+    """The X-Ray Matrix Engine: Flattens merged cells and crushes the False Positive bug."""
+    try:
+        xls = pd.ExcelFile(io.BytesIO(file_bytes), engine='openpyxl')
+        target_sheet = xls.sheet_names[0]
+        for sheet in xls.sheet_names:
+            if 'DAILY' in sheet.upper() or 'OPERATING' in sheet.upper():
+                target_sheet = sheet
+                break
+        df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=target_sheet, header=None, dtype=str)
+    except:
+        df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl', dtype=str)
 
-    df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=target_sheet, header=None, dtype=str)
-    
-    # 2. Build the X-Ray Block (Top 30 rows)
+    # Isolate the top 30 rows and apply global Forward-Fill to destroy merged cell gaps
     header_block = df_raw.head(30).copy()
-    
-    # Forward-fill merged cells horizontally, then vertically
     header_block = header_block.ffill(axis=1).ffill(axis=0)
     
     col_map = {}
-    data_start_row = 0
     
-    # 3. Scan the X-Ray block for combined column signatures
+    # Sweep the flattened matrix column by column
     for col_idx in range(len(header_block.columns)):
-        # Join all text in the column's header block into a single DNA string
-        col_text = " ".join([str(x).upper() for x in header_block.iloc[:, col_idx].values if pd.notna(x)])
+        # Join the column into a single string. Use ' | ' to prevent accidental word merging
+        col_text = " | ".join([str(x).upper() for x in header_block.iloc[:, col_idx].values if pd.notna(x)])
         
         if 'DATE' in col_text or 'DAY' in col_text:
-            if 'Date' not in col_map: col_map['Date'] = col_idx
-            
+            if 'Date' not in col_map: 
+                col_map['Date'] = col_idx
+                
         if 'OPERATING' in col_text or 'HOURS' in col_text or 'RUN' in col_text:
-            if 'MAIN' in col_text or 'M/E' in col_text or 'ME ' in col_text:
+            # Strict matching to prevent "PLANNED MAINTENANCE SYSTEM" false-positive
+            if 'MAIN ENGINE' in col_text or 'M/E' in col_text:
                 col_map['ME_Hours'] = col_idx
-            elif 'GEN' in col_text and ('1' in col_text or 'ONE' in col_text):
+            elif 'GENERATOR' in col_text and ('1' in col_text or 'ONE' in col_text):
                 col_map['DG1_Hours'] = col_idx
-            elif 'GEN' in col_text and ('2' in col_text or 'TWO' in col_text):
+            elif 'GENERATOR' in col_text and ('2' in col_text or 'TWO' in col_text):
                 col_map['DG2_Hours'] = col_idx
-            elif 'GEN' in col_text and ('3' in col_text or 'THREE' in col_text):
+            elif 'GENERATOR' in col_text and ('3' in col_text or 'THREE' in col_text):
                 col_map['DG3_Hours'] = col_idx
 
-    # 4. Extract Data safely by mathematically identifying the first valid date
+    data_start_row = 0
     if 'Date' in col_map:
+        # Instead of guessing the start row, mathematically prove it by finding the first valid Date
         date_col = df_raw.iloc[:, col_map['Date']]
         for i in range(len(date_col)):
             try:
-                # If pandas can convert it to a datetime, this is the start of the data
                 parsed = pd.to_datetime(date_col.iloc[i], errors='coerce', dayfirst=True)
                 if pd.notna(parsed):
                     data_start_row = i
                     break
             except:
                 pass
-                
-        df = df_raw.iloc[data_start_row:].copy()
-        clean_df = pd.DataFrame()
-        clean_df['Date'] = pd.to_datetime(df.iloc[:, col_map['Date']], errors='coerce', dayfirst=True)
-        
-        for sys_col in ['ME_Hours', 'DG1_Hours', 'DG2_Hours', 'DG3_Hours']:
-            if sys_col in col_map:
-                clean_df[sys_col] = df.iloc[:, col_map[sys_col]].apply(lambda x: re.sub(r'[^\d.]', '', str(x)))
-                clean_df[sys_col] = pd.to_numeric(clean_df[sys_col], errors='coerce').fillna(0.0)
-            else:
-                clean_df[sys_col] = 0.0
-                
-        return clean_df.dropna(subset=['Date']).reset_index(drop=True), df_raw, col_map
+
+        if data_start_row > 0:
+            df = df_raw.iloc[data_start_row:].copy()
+            clean_df = pd.DataFrame()
+            clean_df['Date'] = pd.to_datetime(df.iloc[:, col_map['Date']], errors='coerce', dayfirst=True)
+            
+            # Map the exact timelines requested by the DG / ME State Machine
+            for sys_col in ['ME_Hours', 'DG1_Hours', 'DG2_Hours', 'DG3_Hours']:
+                if sys_col in col_map:
+                    clean_df[sys_col] = df.iloc[:, col_map[sys_col]].apply(lambda x: re.sub(r'[^\d.]', '', str(x)))
+                    clean_df[sys_col] = pd.to_numeric(clean_df[sys_col], errors='coerce').fillna(0.0)
+                else:
+                    clean_df[sys_col] = 0.0
+                    
+            return clean_df.dropna(subset=['Date']).reset_index(drop=True), df_raw, col_map
     
     return pd.DataFrame(), df_raw, col_map
 
@@ -226,7 +227,7 @@ st.markdown(f"""
     <div class="hero-badge">
         <span style="color:#00e0b0">KERNEL</span>&ensp;Zero-Trust Triangulation<br>
         <span style="color:#00e0b0">DECODER</span>&ensp;X-Ray Matrix Sweep<br>
-        <span style="color:#fff">BUILD</span>&ensp;v10.0.4 Ultimate Edition
+        <span style="color:#fff">BUILD</span>&ensp;v10.1.0 Ultimate Edition
     </div>
 </div>
 """, unsafe_allow_html=True)
