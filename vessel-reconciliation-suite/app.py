@@ -5,36 +5,56 @@ import io
 import re
 import hashlib
 from datetime import datetime
+import base64
+import traceback
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import warnings
 
 warnings.filterwarnings("ignore")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 1. ENTERPRISE PAGE CONFIGURATION & PREMIUM CSS
+# 1. ENTERPRISE PAGE CONFIGURATION & POSEIDON TITAN CSS
 # ═══════════════════════════════════════════════════════════════════════════════
-st.set_page_config(page_title="Minoan Falcon | Recon Suite", page_icon="⚓", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="POSEIDON | Recon Suite", page_icon="⚓", layout="wide", initial_sidebar_state="collapsed")
+
+def _u(s): return f"data:image/svg+xml;base64,{base64.b64encode(s.encode()).decode()}"
+
+# SVG Assets from Poseidon Titan Zenith Edition
+LOGO_SVG = base64.b64encode(b'<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="pg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#c9a84c"/><stop offset="50%" stop-color="#00e0b0"/><stop offset="100%" stop-color="#fff"/></linearGradient></defs><circle cx="24" cy="24" r="22" fill="none" stroke="url(#pg)" stroke-width="0.8" opacity=".3"/><path d="M24 6L24 42" stroke="url(#pg)" stroke-width="1.5" stroke-linecap="round"/><path d="M12 24Q24 32 36 24" fill="none" stroke="url(#pg)" stroke-width="1.5" stroke-linecap="round"/></svg>').decode()
+
+ICONS = {
+    "VERIFIED": _u('<svg viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg"><circle cx="14" cy="14" r="12" fill="none" stroke="#00e0b0" stroke-width="1" opacity=".2"/><circle cx="14" cy="14" r="7.5" fill="#061a14" stroke="#00e0b0" stroke-width="1.5"/><polyline points="10,14.5 12.8,17 18,10.5" fill="none" stroke="#00e0b0" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'),
+    "DRIFT": _u('<svg viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg"><circle cx="14" cy="14" r="12" fill="none" stroke="#ff2a55" stroke-width="1" stroke-dasharray="4 3"/><circle cx="14" cy="14" r="7.5" fill="#1a0508" stroke="#ff2a55" stroke-width="1.5"/><g stroke="#ff2a55" stroke-width="2.5" stroke-linecap="round"><line x1="11" y1="11" x2="17" y2="17"/><line x1="17" y1="11" x2="11" y2="17"/></g></svg>'),
+    "CLOCK": _u('<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#3b82f6" d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>'),
+    "SEAL": _u('<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#7b68ee" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM9 6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6zm9 14H6V10h12v10zm-6-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z"/></svg>')
+}
 
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=JetBrains+Mono:wght@400;700&display=swap');
-    
     .stApp { background-color: #060b13; font-family: 'Inter', sans-serif; color: #f8fafc; }
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
     
-    .hero { border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 20px; margin-bottom: 30px; }
-    .hero-title { font-size: 2.5rem; font-weight: 800; background: linear-gradient(90deg, #ffffff, #8ba1b5); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: -1px; }
-    .hero-sub { font-size: 0.95rem; color: #64748b; font-weight: 500; text-transform: uppercase; letter-spacing: 2px; }
+    :root { --glass-bg: rgba(13, 21, 34, 0.6); --glass-border: rgba(255,255,255,0.05); }
     
-    .stFileUploader > div > div { background-color: rgba(13, 21, 34, 0.6) !important; border: 1px dashed rgba(255,255,255,0.1) !important; border-radius: 12px !important; transition: all 0.3s ease; }
+    .hero { display: flex; align-items: center; justify-content: space-between; padding-bottom: 20px; border-bottom: 1px solid var(--glass-border); margin-bottom: 30px; }
+    .hero-left { display: flex; align-items: center; gap: 20px; }
+    .hero-logo { width: 55px; height: 55px; }
+    .hero-title { font-size: 2.2rem; font-weight: 800; background: linear-gradient(90deg, #ffffff, #8ba1b5); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: -1px; line-height: 1.1;}
+    .hero-sub { font-size: 0.85rem; color: #64748b; font-weight: 600; text-transform: uppercase; letter-spacing: 2px; }
+    .hero-badge { text-align: right; font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: #64748b; line-height: 1.6; }
+    
+    .stFileUploader > div > div { background-color: var(--glass-bg) !important; border: 1px dashed rgba(255,255,255,0.1) !important; border-radius: 12px !important; transition: all 0.3s ease; }
     .stFileUploader > div > div:hover { border-color: #00e0b0 !important; background-color: rgba(0, 224, 176, 0.05) !important; }
     
-    .hud-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 30px; }
-    .hud-card { background: rgba(13, 21, 34, 0.8); border: 1px solid rgba(255,255,255,0.05); border-radius: 8px; padding: 20px; }
-    .hud-card.success { border-bottom: 3px solid #00e0b0; }
-    .hud-card.warn { border-bottom: 3px solid #ff2a55; }
-    .hud-card.info { border-bottom: 3px solid #3b82f6; }
-    .hud-title { font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; margin-bottom: 5px; }
-    .hud-val { font-size: 2rem; font-weight: 800; color: #ffffff; line-height: 1.1; font-family: 'JetBrains Mono', monospace; }
+    .hud-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; margin-bottom: 30px; }
+    .hud-card { background: rgba(13, 21, 34, 0.8); border: 1px solid var(--glass-border); border-radius: 8px; padding: 20px; display: flex; flex-direction: column; box-shadow: 0 10px 30px -10px rgba(0,0,0,0.5); }
+    .hud-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .hud-title { font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 1.2px; font-weight: 600; }
+    .hud-icon img { width: 24px; height: 24px; }
+    .hud-val { font-size: 2.2rem; font-weight: 800; color: #ffffff; line-height: 1.1; font-family: 'JetBrains Mono', monospace; }
+    .hud-sub { font-size: 0.75rem; color: #475569; margin-top: 5px; font-weight: 500; }
     
     .stTabs [data-baseweb="tab-list"] { gap: 24px; }
     .stTabs [data-baseweb="tab"] { height: 50px; white-space: pre-wrap; background-color: transparent; border-radius: 4px; color: #64748b; font-weight: 600; }
@@ -43,16 +63,16 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2. THE TARGETED EXTRACTION ENGINES
+# 2. BULLETPROOF INGESTION ENGINES (Zero-Trust Logic)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@st.cache_data(show_spinner=False)
 def parse_daily_hours_excel(file_bytes):
-    """Engine 1: Designed STRICTLY for the Excel Timeline (TEC-001 format)."""
+    """Targeted strictly for Excel Timelines."""
     df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl', dtype=str)
     header_idx, date_idx, hrs_idx = -1, -1, -1
     
-    # Hunt for exact terminology provided by user
-    for i in range(min(50, len(df_raw))):
+    for i in range(min(60, len(df_raw))):
         vals = [str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)]
         if any('DATE' in v for v in vals) and any('OPERATING HOURS' in v for v in vals):
             header_idx = i
@@ -66,25 +86,23 @@ def parse_daily_hours_excel(file_bytes):
         df = df_raw.iloc[header_idx + 1:].copy()
         clean_df = pd.DataFrame()
         clean_df['Date'] = pd.to_datetime(df.iloc[:, date_idx], errors='coerce', dayfirst=True)
-        # Strip text, keep only numbers
         clean_df['ME_Hours'] = df.iloc[:, hrs_idx].apply(lambda x: re.sub(r'[^\d.]', '', str(x)))
         clean_df['ME_Hours'] = pd.to_numeric(clean_df['ME_Hours'], errors='coerce').fillna(0.0)
         return clean_df.dropna(subset=['Date']).reset_index(drop=True), df_raw
     
     return pd.DataFrame(), df_raw
 
+@st.cache_data(show_spinner=False)
 def parse_pms_binary_doc(file_bytes):
-    """Engine 2: The ASCII Bell Ripper. Designed STRICTLY for the .doc Overhaul file."""
-    # Decode the legacy binary
+    """The ASCII Bell Ripper. Decodes 1997 OLE2 Word binaries instantly."""
     raw_text = file_bytes.decode('latin-1', errors='ignore')
     clean_text = raw_text.replace('\x00', '')
     
-    # \x07 is the ASCII Bell character Microsoft Word uses to separate table cells
+    # Mathematical cell extraction via ASCII Bell
     cells = [c.strip() for c in clean_text.split('\x07') if c.strip()]
-    
     extracted_data = []
     
-    # Maritime Component Anchor List
+    # Primary Component Anchors
     COMPONENTS = ['CYLINDER COVER', 'PISTON ASSEMBLY', 'STUFFING BOX', 'PISTON CROWN', 
                   'CYLINDER LINER', 'EXAUST VALVE', 'EXHAUST VALVE', 'STARTING VALVE', 
                   'SAFETY VALVE', 'FUEL VALVES', 'FUEL PUMP']
@@ -98,42 +116,33 @@ def parse_pms_binary_doc(file_bytes):
     for cell in cells:
         cell_upper = cell.upper()
         
-        # 1. Is this cell a component name?
-        if any(c in cell_upper for c in COMPONENTS) and len(cell) < 30:
+        # 1. Is this cell a valid Component Name?
+        if any(c in cell_upper for c in COMPONENTS) and len(cell) < 35:
+            # Save the previous block before moving to the new component
             if current_comp and comp_dates and comp_hours:
-                # Save the PREVIOUS component block before starting the new one
                 extracted_data.append({
                     'Component': current_comp,
-                    # Grab the most recent overhaul date
                     'Last_Overhaul': pd.to_datetime(comp_dates[-1], errors='coerce', dayfirst=True),
-                    # Grab the highest running hours recorded in that block
-                    'Claimed_Hours': max(comp_hours)
+                    'Claimed_Hours': max(comp_hours) # Extract largest valid number as Run Hrs
                 })
             current_comp = cell_upper
             comp_dates = []
             comp_hours = []
             continue
             
-        # 2. If we are tracking a component, hunt for dates and hours
+        # 2. Extract Data for Current Component
         if current_comp:
             dates_found = re.findall(date_pattern, cell)
-            if dates_found:
-                comp_dates.extend(dates_found)
-                
-            # Look for large running hours (ignoring cylinder numbers like '1' or '2')
+            if dates_found: comp_dates.extend(dates_found)
+            
             nums_found = re.findall(r'\b\d{3,6}\b', cell)
-            if nums_found:
-                comp_hours.extend([float(n) for n in nums_found])
+            if nums_found: comp_hours.extend([float(n) for n in nums_found])
 
-    # Save the very last component in the file
+    # Flush the final component
     if current_comp and comp_dates and comp_hours:
-        extracted_data.append({
-            'Component': current_comp,
-            'Last_Overhaul': pd.to_datetime(comp_dates[-1], errors='coerce', dayfirst=True),
-            'Claimed_Hours': max(comp_hours)
-        })
+        extracted_data.append({'Component': current_comp, 'Last_Overhaul': pd.to_datetime(comp_dates[-1], errors='coerce', dayfirst=True), 'Claimed_Hours': max(comp_hours)})
 
-    raw_cells_df = pd.DataFrame(cells, columns=["ASCII Extracted Cells"])
+    raw_cells_df = pd.DataFrame(cells, columns=["ASCII Extracted Text Blocks"])
 
     if extracted_data:
         clean_df = pd.DataFrame(extracted_data).dropna(subset=['Last_Overhaul']).reset_index(drop=True)
@@ -142,117 +151,181 @@ def parse_pms_binary_doc(file_bytes):
     return pd.DataFrame(), raw_cells_df
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 3. MANUAL INGESTION UI (Restoring Control to the User)
+# 3. PLOTLY RENDER ENGINE
 # ═══════════════════════════════════════════════════════════════════════════════
-st.markdown("""
+_BL = dict(
+    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+    font=dict(family='Inter', color='#f8fafc')
+)
+_AX = dict(gridcolor='rgba(255,255,255,0.05)', zerolinecolor='rgba(255,255,255,0.1)', tickfont=dict(family='JetBrains Mono', color='#475569'))
+
+def chart_drift(res_df):
+    """Generates the high-fidelity POSEIDON drift comparison chart."""
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=res_df['Component'], y=res_df['Legacy Claim'], name='Claimed (Reported)',
+        marker_color='rgba(201,168,76,0.15)', marker_line_color='#c9a84c', marker_line_width=1.5
+    ))
+    fig.add_trace(go.Bar(
+        x=res_df['Component'], y=res_df['Verified Math'], name='Verified (Engine)',
+        marker_color='rgba(0,224,176,0.15)', marker_line_color='#00e0b0', marker_line_width=1.5
+    ))
+    fig.update_layout(
+        **_BL,
+        title=dict(text='Forensic Variance: Claimed vs Verified Running Hours', font=dict(size=18, color="#fff", family='Inter')),
+        barmode='group', height=500, margin=dict(l=10, r=10, t=60, b=40),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+        xaxis=dict(tickangle=-45, automargin=True, **_AX), yaxis=dict(title='Running Hours', **_AX)
+    )
+    return fig
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 4. MAIN FRONTEND ORCHESTRATOR
+# ═══════════════════════════════════════════════════════════════════════════════
+st.markdown(f"""
 <div class="hero">
-    <div class="hero-title">VESSEL RECONCILIATION SUITE</div>
-    <div class="hero-sub">M/V Minoan Falcon | Zero-Trust Forensic Auditor</div>
+    <div class="hero-left">
+        <img src="data:image/svg+xml;base64,{LOGO_SVG}" class="hero-logo" alt=""/>
+        <div>
+            <div class="hero-title">POSEIDON RECON</div>
+            <div class="hero-sub">Component Reconciliation Engine</div>
+        </div>
+    </div>
+    <div class="hero-badge">
+        <span style="color:#00e0b0">KERNEL</span>&ensp;Zero-Trust Triangulation<br>
+        <span style="color:#00e0b0">DECODER</span>&ensp;ASCII Bell Extraction<br>
+        <span style="color:#fff">BUILD</span>&ensp;v10.0.0 The Zenith Edition
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
 col1, col2 = st.columns(2)
-
 with col1:
-    st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>1. COMPONENT OVERHAUL REPORT (.doc)</div>", unsafe_allow_html=True)
-    pms_file = st.file_uploader("Upload the file containing Cylinder Covers, Last O/H, etc.", type=["doc", "docx"], key="pms_box")
+    st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>1. COMPONENT OVERHAULS (.doc)</div>", unsafe_allow_html=True)
+    pms_file = st.file_uploader("Upload Word Binary", type=["doc", "docx"], key="pms_box")
 
 with col2:
     st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>2. DAILY OPERATING HOURS (Excel)</div>", unsafe_allow_html=True)
-    logs_file = st.file_uploader("Upload the file containing Dates and Daily Operating Hours", type=["xlsx", "xls"], key="logs_box")
+    logs_file = st.file_uploader("Upload Excel Timeline", type=["xlsx", "xls"], key="logs_box")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 4. TRIANGULATION MATH ENGINE
-# ═══════════════════════════════════════════════════════════════════════════════
 if pms_file and logs_file:
-    with st.spinner("Initializing ASCII Bell Ripper & Triangulation Engine..."):
-        
-        # Execute targeted parsers based on the box the user chose
-        pms_df, diag_pms = parse_pms_binary_doc(pms_file.getvalue())
-        timeline_df, diag_timeline = parse_daily_hours_excel(logs_file.getvalue())
-        
-        total_days = len(timeline_df) if not timeline_df.empty else 0
-        audit_results = []
-        physics_violations = []
-
-        if not timeline_df.empty and not pms_df.empty:
-            # 1. Physics Check
-            for _, row in timeline_df.iterrows():
-                if row['ME_Hours'] > 24 or row['ME_Hours'] < 0:
-                    physics_violations.append({"Date": row['Date'].strftime('%d-%b-%Y'), "System": "MAIN ENGINE", "Logged Hours": row['ME_Hours']})
-
-            # 2. Drift Calculation
-            for _, row in pms_df.iterrows():
-                comp = row['Component']
-                oh_date = row['Last_Overhaul']
-                legacy_hrs = row['Claimed_Hours']
-                
-                # Filter the timeline starting from the Overhaul Date
-                mask = timeline_df['Date'] >= oh_date
-                verified_hrs = timeline_df.loc[mask, 'ME_Hours'].sum()
-                delta = verified_hrs - legacy_hrs
-                
-                audit_results.append({
-                    "Component": comp,
-                    "Overhaul Date": oh_date.strftime('%d-%b-%Y'),
-                    "Legacy Claim": int(legacy_hrs),
-                    "Verified Math": int(verified_hrs),
-                    "Delta": int(delta),
-                    "Status": "VERIFIED" if int(delta) == 0 else "DRIFT DETECTED"
-                })
-
-        # ═══════════════════════════════════════════════════════════════════════════════
-        # 5. DASHBOARD RENDERING
-        # ═══════════════════════════════════════════════════════════════════════════════
-        st.markdown("<br>", unsafe_allow_html=True)
-        tab1, tab2 = st.tabs(["📊 AUDIT DASHBOARD", "🔎 GLASS-BOX DIAGNOSTICS"])
-
-        with tab1:
-            if audit_results:
-                res_df = pd.DataFrame(audit_results)
-                errors_corrected = len(res_df[res_df['Delta'] != 0])
-                digital_seal = hashlib.sha256(res_df.to_json(orient='records').encode()).hexdigest()
-
-                hud_html = f"""
-                <div class="hud-grid">
-                    <div class="hud-card success"><div class="hud-title">Components Audited</div><div class="hud-val">{len(res_df)}</div></div>
-                    <div class="hud-card {'warn' if errors_corrected > 0 else 'success'}"><div class="hud-title">Drift Anomalies</div><div class="hud-val" style="color: {'#ff2a55' if errors_corrected > 0 else '#00e0b0'};">{errors_corrected}</div></div>
-                    <div class="hud-card info"><div class="hud-title">Timeline Stitched</div><div class="hud-val">{total_days}</div></div>
-                    <div class="hud-card" style="border-bottom: 3px solid #7b68ee;"><div class="hud-title">Digital Seal (SHA-256)</div><div class="hud-val" style="font-size: 1.2rem; margin-top: 10px;">{digital_seal[:10]}...</div></div>
-                </div>
-                """
-                st.markdown(hud_html, unsafe_allow_html=True)
-
-                if physics_violations:
-                    st.error(f"⚠️ Phase 1: {len(physics_violations)} Kinematic Violations Detected (Hours > 24)")
-                
-                def style_dataframe(row):
-                    if row['Delta'] > 0: return ['background-color: rgba(255, 42, 85, 0.1); color: #ff8a9f'] * len(row)
-                    elif row['Delta'] < 0: return ['background-color: rgba(201, 168, 76, 0.1); color: #c9a84c'] * len(row)
-                    return ['color: #00e0b0'] * len(row)
-                
-                st.dataframe(res_df.style.apply(style_dataframe, axis=1), use_container_width=True, hide_index=True)
-                
-                csv_data = res_df.to_csv(index=False).encode('utf-8')
-                st.download_button("⬇️ DOWNLOAD IMMUTABLE BASELINE (.CSV)", data=csv_data, file_name=f"Verified_Baseline_{datetime.now().strftime('%Y%m%d')}.csv", mime='text/csv', type="primary")
-            else:
-                st.error("Audit Could Not Complete. Please check the Diagnostics tab to ensure the correct files were placed in the correct boxes.")
-
-        with tab2:
-            st.markdown("### The Transparency Engine")
-            st.markdown("<span style='color:#64748b;'>Review the raw data extracted by the ASCII Bell Ripper and the Timeline Engine. If data is missing from the Audit Dashboard, look here to see what the machine failed to catch.</span>", unsafe_allow_html=True)
+    with st.spinner("Executing Forensic Triangulation..."):
+        try:
+            # 1. Isolate the Extractions
+            pms_df, diag_pms = parse_pms_binary_doc(pms_file.getvalue())
+            timeline_df, diag_timeline = parse_daily_hours_excel(logs_file.getvalue())
             
-            c1, c2 = st.columns(2)
-            with c1:
-                st.subheader("Raw Component Cells (Extracted from .doc)")
-                if diag_pms is not None and not diag_pms.empty:
-                    st.dataframe(diag_pms, use_container_width=True, height=500)
-                else:
-                    st.warning("No data extracted from the Component file.")
+            total_days = len(timeline_df) if not timeline_df.empty else 0
+            audit_results = []
+            
+            # 2. Execute the Triangulation Math
+            if not timeline_df.empty and not pms_df.empty:
+                for _, row in pms_df.iterrows():
+                    comp = row['Component']
+                    oh_date = row['Last_Overhaul']
+                    legacy_hrs = row['Claimed_Hours']
                     
-            with c2:
-                st.subheader("Raw Timeline Matrix (Extracted from Excel)")
-                if diag_timeline is not None and not diag_timeline.empty:
-                    st.dataframe(diag_timeline.head(30), use_container_width=True, height=500)
+                    # Core Logic: Sum timeline starting from Overhaul Date
+                    mask = timeline_df['Date'] >= oh_date
+                    verified_hrs = timeline_df.loc[mask, 'ME_Hours'].sum()
+                    delta = verified_hrs - legacy_hrs
+                    
+                    audit_results.append({
+                        "Component": comp,
+                        "Overhaul Date": oh_date.strftime('%d-%b-%Y'),
+                        "Claimed (Doc)": int(legacy_hrs),
+                        "Verified (Excel)": int(verified_hrs),
+                        "Delta (Drift)": int(delta),
+                        "Status": "VERIFIED" if int(delta) == 0 else "DRIFT DETECTED"
+                    })
+
+            # ═══════════════════════════════════════════════════════════════════════════════
+            # 5. DASHBOARD RENDERING
+            # ═══════════════════════════════════════════════════════════════════════════════
+            st.markdown("<br>", unsafe_allow_html=True)
+            t1, t2, t3 = st.tabs(["📊 IMMUTABLE LEDGER", "📈 FORENSIC PLOT", "🔎 GLASS-BOX DIAGNOSTICS"])
+
+            with t1:
+                if audit_results:
+                    res_df = pd.DataFrame(audit_results)
+                    errors_corrected = len(res_df[res_df['Delta (Drift)'] != 0])
+                    digital_seal = hashlib.sha256(res_df.to_json(orient='records').encode()).hexdigest()
+
+                    # Poseidon HUD Generation
+                    st.markdown(f"""
+                    <div class="hud-grid">
+                        <div class="hud-card" style="border-bottom: 3px solid #00e0b0;">
+                            <div class="hud-header">
+                                <div class="hud-title">Components Audited</div>
+                                <div class="hud-icon"><img src="{ICONS['VERIFIED']}"></div>
+                            </div>
+                            <div class="hud-val">{len(res_df)}</div>
+                            <div class="hud-sub">Extracted via ASCII Decoder</div>
+                        </div>
+                        <div class="hud-card" style="border-bottom: 3px solid {'#ff2a55' if errors_corrected > 0 else '#00e0b0'};">
+                            <div class="hud-header">
+                                <div class="hud-title">Drift Anomalies</div>
+                                <div class="hud-icon"><img src="{ICONS['DRIFT'] if errors_corrected > 0 else ICONS['VERIFIED']}"></div>
+                            </div>
+                            <div class="hud-val" style="color: {'#ff2a55' if errors_corrected > 0 else '#00e0b0'};">{errors_corrected}</div>
+                            <div class="hud-sub">Mathematical deviations found</div>
+                        </div>
+                        <div class="hud-card" style="border-bottom: 3px solid #3b82f6;">
+                            <div class="hud-header">
+                                <div class="hud-title">Timeline Stitched</div>
+                                <div class="hud-icon"><img src="{ICONS['CLOCK']}"></div>
+                            </div>
+                            <div class="hud-val">{total_days}</div>
+                            <div class="hud-sub">Chronological Days Verified</div>
+                        </div>
+                        <div class="hud-card" style="border-bottom: 3px solid #7b68ee;">
+                            <div class="hud-header">
+                                <div class="hud-title">Digital Seal (SHA-256)</div>
+                                <div class="hud-icon"><img src="{ICONS['SEAL']}"></div>
+                            </div>
+                            <div class="hud-val" style="font-size: 1.4rem; margin-top: 8px;">{digital_seal[:12]}</div>
+                            <div class="hud-sub">Data integrity locked</div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    def style_dataframe(row):
+                        if row['Delta (Drift)'] > 0: return ['background-color: rgba(255, 42, 85, 0.1); color: #ff8a9f'] * len(row)
+                        elif row['Delta (Drift)'] < 0: return ['background-color: rgba(201, 168, 76, 0.1); color: #c9a84c'] * len(row)
+                        return ['color: #00e0b0'] * len(row)
+                    
+                    st.dataframe(res_df.style.apply(style_dataframe, axis=1), use_container_width=True, hide_index=True)
+                    
+                    csv_data = res_df.to_csv(index=False).encode('utf-8')
+                    st.download_button("⬇️ EXPORT FORENSIC LEDGER (.CSV)", data=csv_data, file_name=f"Reconciliation_Audit.csv", mime='text/csv')
                 else:
-                    st.warning("No data extracted from the Timeline file.")
+                    st.error("Audit Could Not Complete. Please check the Diagnostics tab to ensure the files contain the correct data.")
+
+            with t2:
+                if audit_results:
+                    # Rename columns temporarily for the Plotly chart wrapper
+                    plot_df = res_df.rename(columns={'Claimed (Doc)': 'Legacy Claim', 'Verified (Excel)': 'Verified Math'})
+                    st.plotly_chart(chart_drift(plot_df), use_container_width=True, config={'displayModeBar': False})
+
+            with t3:
+                st.markdown("### The Transparency Engine")
+                st.markdown("<span style='color:#64748b; font-size:0.85rem;'>Review the raw data extracted by the parsers to physically verify the structural integrity of the documents before the math is applied.</span><br><br>", unsafe_allow_html=True)
+                
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("<div style='color:#8ba1b5; font-size:0.8rem; font-weight:600; margin-bottom:10px;'>RAW ASCII CELLS (.doc)</div>", unsafe_allow_html=True)
+                    if diag_pms is not None and not diag_pms.empty:
+                        st.dataframe(diag_pms, use_container_width=True, height=500)
+                    else:
+                        st.warning("No data extracted from the Overhaul file.")
+                        
+                with c2:
+                    st.markdown("<div style='color:#8ba1b5; font-size:0.8rem; font-weight:600; margin-bottom:10px;'>RAW TIMELINE MATRIX (.xlsx)</div>", unsafe_allow_html=True)
+                    if diag_timeline is not None and not diag_timeline.empty:
+                        st.dataframe(diag_timeline.head(50), use_container_width=True, height=500)
+                    else:
+                        st.warning("No data extracted from the Timeline file.")
+
+        except Exception as e:
+            st.error(f"🚨 Pipeline Execution Halted: {str(e)}")
+            st.info(traceback.format_exc())
