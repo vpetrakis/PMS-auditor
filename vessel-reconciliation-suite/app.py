@@ -50,7 +50,7 @@ st.markdown("""
     .hud-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
     .hud-title { font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 1.2px; font-weight: 600; }
     .hud-icon img { width: 24px; height: 24px; }
-    .hud-val { font-size: 2.2rem; font-weight: 800; color: #ffffff; line-height: 1.1; font-family: 'JetBrains Mono', monospace; }
+    .hud-val { font-size: 2rem; font-weight: 800; color: #ffffff; line-height: 1.1; font-family: 'JetBrains Mono', monospace; }
     .hud-sub { font-size: 0.75rem; color: #475569; margin-top: 5px; font-weight: 500; }
     
     .stTabs [data-baseweb="tab-list"] { gap: 24px; }
@@ -60,85 +60,139 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2. BULLETPROOF INGESTION ENGINES (Zero-Trust Logic)
+# 2. THE SURGICAL EXTRACTION ENGINES (Multi-System Vertical Plumb Lines)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @st.cache_data(show_spinner=False)
 def parse_daily_hours_excel(file_bytes):
-    """Targeted strictly for Excel Timelines."""
-    df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl', dtype=str)
-    header_idx, date_idx, hrs_idx = -1, -1, -1
+    """Drops independent vertical plumb lines for ME, DG1, DG2, and DG3."""
+    # We attempt to read the 'DAILY OPERATING HOURS' sheet directly if possible.
+    try:
+        df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name='DAILY OPERATING HOURS', header=None, engine='openpyxl', dtype=str)
+    except:
+        df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl', dtype=str)
+        
+    header_idx = -1
+    col_map = {}
     
-    for i in range(min(60, len(df_raw))):
-        vals = [str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)]
-        if any('DATE' in v for v in vals) and any('OPERATING HOURS' in v for v in vals):
+    # Sweep vertically to find the header row
+    for i in range(min(100, len(df_raw))):
+        row_str = " ".join([str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)])
+        if 'DATE' in row_str and ('HOURS' in row_str or 'OPERATING' in row_str):
             header_idx = i
-            for j, val in enumerate(df_raw.iloc[i].values):
-                v_str = str(val).upper() if pd.notna(val) else ""
-                if 'DATE' in v_str: date_idx = j
-                elif 'OPERATING HOURS' in v_str: hrs_idx = j
+            # Sweep horizontally to drop the specific plumb lines
+            for j in range(len(df_raw.columns)):
+                # Combine headers in case of merged cells
+                v1 = str(df_raw.iloc[max(0, i-1), j]).upper() if pd.notna(df_raw.iloc[max(0, i-1), j]) else ""
+                v2 = str(df_raw.iloc[i, j]).upper() if pd.notna(df_raw.iloc[i, j]) else ""
+                v_comb = f"{v1} {v2}"
+                
+                if 'DATE' in v_comb or 'DAY' in v_comb:
+                    col_map['Date'] = j
+                elif 'MAIN' in v_comb or 'M/E' in v_comb or 'ME ' in v_comb:
+                    col_map['ME_Hours'] = j
+                elif 'DG1' in v_comb or 'D/G 1' in v_comb or 'D/G NO.1' in v_comb or 'DG 1' in v_comb:
+                    col_map['DG1_Hours'] = j
+                elif 'DG2' in v_comb or 'D/G 2' in v_comb or 'D/G NO.2' in v_comb or 'DG 2' in v_comb:
+                    col_map['DG2_Hours'] = j
+                elif 'DG3' in v_comb or 'D/G 3' in v_comb or 'D/G NO.3' in v_comb or 'DG 3' in v_comb:
+                    col_map['DG3_Hours'] = j
             break
 
-    if header_idx != -1 and date_idx != -1 and hrs_idx != -1:
+    if header_idx != -1 and 'Date' in col_map:
         df = df_raw.iloc[header_idx + 1:].copy()
         clean_df = pd.DataFrame()
-        clean_df['Date'] = pd.to_datetime(df.iloc[:, date_idx], errors='coerce', dayfirst=True)
-        clean_df['ME_Hours'] = df.iloc[:, hrs_idx].apply(lambda x: re.sub(r'[^\d.]', '', str(x)))
-        clean_df['ME_Hours'] = pd.to_numeric(clean_df['ME_Hours'], errors='coerce').fillna(0.0)
+        clean_df['Date'] = pd.to_datetime(df.iloc[:, col_map['Date']], errors='coerce', dayfirst=True)
+        
+        # Extract hours for any system found, default to 0 if column is missing
+        for sys_col in ['ME_Hours', 'DG1_Hours', 'DG2_Hours', 'DG3_Hours']:
+            if sys_col in col_map:
+                clean_df[sys_col] = df.iloc[:, col_map[sys_col]].apply(lambda x: re.sub(r'[^\d.]', '', str(x)))
+                clean_df[sys_col] = pd.to_numeric(clean_df[sys_col], errors='coerce').fillna(0.0)
+            else:
+                clean_df[sys_col] = 0.0
+                
         return clean_df.dropna(subset=['Date']).reset_index(drop=True), df_raw
     
     return pd.DataFrame(), df_raw
 
+
 @st.cache_data(show_spinner=False)
 def parse_pms_binary_doc(file_bytes):
-    """The ASCII Bell Ripper. Decodes 1997 OLE2 Word binaries instantly."""
-    raw_text = file_bytes.decode('latin-1', errors='ignore')
-    clean_text = raw_text.replace('\x00', '')
-    
-    # Mathematical cell extraction via ASCII Bell
-    cells = [c.strip() for c in clean_text.split('\x07') if c.strip()]
+    """The Horizontal Matrix Resolver (ASCII Bell Ripper with State Machine)."""
+    raw_text = file_bytes.decode('latin-1', errors='ignore').replace('\x00', '')
+    cells = [c.strip() for c in raw_text.split('\x07') if c.strip()]
     extracted_data = []
     
-    # Primary Component Anchors
-    COMPONENTS = ['CYLINDER COVER', 'PISTON ASSEMBLY', 'STUFFING BOX', 'PISTON CROWN', 
-                  'CYLINDER LINER', 'EXAUST VALVE', 'EXHAUST VALVE', 'STARTING VALVE', 
-                  'SAFETY VALVE', 'FUEL VALVES', 'FUEL PUMP']
+    COMPONENTS = ['CYLINDER COVER', 'PISTON ASSEMBLY', 'STUFFING BOX', 'PISTON CROWN', 'CYLINDER LINER', 
+                  'EXAUST VALVE', 'STARTING VALVE', 'SAFETY VALVE', 'FUEL VALVES', 'FUEL PUMP', 
+                  'SUCTION VALVE', 'PUNCTURE VALVE', 'CROSSHEAD BEARINGS', 'BOTTOM END BEARINGS', 
+                  'MAIN BEARINGS', 'CYLINDER HEAD', 'PISTON', 'CONNECTING ROD', 'TURBOCHARGER', 
+                  'AIR COOLER', 'COOLING WATER PUMP', 'THERMOSTAT VALVE', 'THRUST BEARING']
+                  
+    system = "ME"
+    sub_units = ["Cyl 1", "Cyl 2", "Cyl 3", "Cyl 4", "Cyl 5", "Cyl 6"]
+    target_timeline = "ME_Hours"
     
-    date_pattern = r'\b(\d{1,2}[-/\.]\w{2,9}[-/\.]?\d{2,4}|\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})\b'
-    
-    current_comp = None
-    comp_dates = []
-    comp_hours = []
-
-    for cell in cells:
-        cell_upper = cell.upper()
+    i = 0
+    while i < len(cells):
+        cell = cells[i].upper()
         
-        # 1. Is this cell a valid Component Name?
-        if any(c in cell_upper for c in COMPONENTS) and len(cell) < 35:
-            # Save the previous block before moving to the new component
-            if current_comp and comp_dates and comp_hours:
-                extracted_data.append({
-                    'Component': current_comp,
-                    'Last_Overhaul': pd.to_datetime(comp_dates[-1], errors='coerce', dayfirst=True),
-                    'Claimed_Hours': max(comp_hours) # Extract largest valid number as Run Hrs
-                })
-            current_comp = cell_upper
-            comp_dates = []
-            comp_hours = []
-            continue
+        # State Machine Phase 1: Parent Tracker
+        if "MAIN ENGINE" in cell:
+            system = "ME"
+            target_timeline = "ME_Hours"
+            sub_units = ["Cyl 1", "Cyl 2", "Cyl 3", "Cyl 4", "Cyl 5", "Cyl 6"]
+        elif "AUX. ENGINE" in cell or "D/G" in cell:
+            system = "DG"
+            sub_units = ["DG1", "DG2", "DG3"] # DG components apply horizontally to DG1, DG2, DG3
             
-        # 2. Extract Data for Current Component
-        if current_comp:
-            dates_found = re.findall(date_pattern, cell)
-            if dates_found: comp_dates.extend(dates_found)
+        # State Machine Phase 2: Component Lock-On
+        is_comp = any(c in cell for c in COMPONENTS) and len(cell) < 40
+        if is_comp:
+            comp_name = cell
+            dates, hours = [], []
             
-            nums_found = re.findall(r'\b\d{3,6}\b', cell)
-            if nums_found: comp_hours.extend([float(n) for n in nums_found])
-
-    # Flush the final component
-    if current_comp and comp_dates and comp_hours:
-        extracted_data.append({'Component': current_comp, 'Last_Overhaul': pd.to_datetime(comp_dates[-1], errors='coerce', dayfirst=True), 'Claimed_Hours': max(comp_hours)})
-
+            # Phase 2a: Scan ahead for the '1' anchor (Overhaul Dates)
+            j = i + 1
+            while j < min(i + 15, len(cells)):
+                if cells[j].strip() == '1':
+                    for k in range(len(sub_units)):
+                        if j + 1 + k < len(cells): dates.append(cells[j + 1 + k])
+                    break
+                j += 1
+                
+            # Phase 2b: Scan ahead for the '2' anchor (Running Hours)
+            j = i + 1
+            while j < min(i + 30, len(cells)):
+                if cells[j].strip() == '2':
+                    for k in range(len(sub_units)):
+                        if j + 1 + k < len(cells): hours.append(cells[j + 1 + k])
+                    break
+                j += 1
+                
+            # Phase 3: Horizontal Cylinder Matrix Resolver
+            for idx, su in enumerate(sub_units):
+                if idx < len(dates) and idx < len(hours):
+                    # Data Sanitization (strips brackets like '[9443')
+                    d_match = re.search(r'\b(\d{1,2}[-/\.]\w{2,9}[-/\.]?\d{2,4}|\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})\b', dates[idx])
+                    h_clean = re.sub(r'[^\d.]', '', hours[idx])
+                    
+                    if d_match and h_clean:
+                        # Determine specific timeline target for DGs
+                        curr_timeline = target_timeline if system == 'ME' else f"{su}_Hours"
+                        
+                        extracted_data.append({
+                            'System': system,
+                            'Target_Timeline': curr_timeline,
+                            'Component': f"[{system}] {comp_name} ({su})",
+                            'Last_Overhaul': pd.to_datetime(d_match.group(1), errors='coerce', dayfirst=True),
+                            'Claimed_Hours': float(h_clean) if h_clean.replace('.','',1).isdigit() else 0.0
+                        })
+            i += 1 
+        else:
+            i += 1
+            
     raw_cells_df = pd.DataFrame(cells, columns=["ASCII Extracted Text Blocks"])
 
     if extracted_data:
@@ -156,12 +210,12 @@ st.markdown(f"""
         <img src="data:image/svg+xml;base64,{LOGO_SVG}" class="hero-logo" alt=""/>
         <div>
             <div class="hero-title">POSEIDON RECON</div>
-            <div class="hero-sub">Component Reconciliation Engine</div>
+            <div class="hero-sub">Enterprise Forensic Auditor</div>
         </div>
     </div>
     <div class="hero-badge">
         <span style="color:#00e0b0">KERNEL</span>&ensp;Zero-Trust Triangulation<br>
-        <span style="color:#00e0b0">DECODER</span>&ensp;ASCII Bell Extraction<br>
+        <span style="color:#00e0b0">DECODER</span>&ensp;State-Machine Matrix<br>
         <span style="color:#fff">BUILD</span>&ensp;v10.0.1 Native Edition
     </div>
 </div>
@@ -177,7 +231,7 @@ with col2:
     logs_file = st.file_uploader("Upload Excel Timeline", type=["xlsx", "xls"], key="logs_box")
 
 if pms_file and logs_file:
-    with st.spinner("Executing Forensic Triangulation..."):
+    with st.spinner("Executing State-Machine Extractor & Triangulation..."):
         try:
             # 1. Isolate the Extractions
             pms_df, diag_pms = parse_pms_binary_doc(pms_file.getvalue())
@@ -186,26 +240,39 @@ if pms_file and logs_file:
             total_days = len(timeline_df) if not timeline_df.empty else 0
             audit_results = []
             
-            # 2. Execute the Triangulation Math
+            # 2. Execute the Triangulation Math (Strictly matching systems to timelines)
             if not timeline_df.empty and not pms_df.empty:
                 for _, row in pms_df.iterrows():
                     comp = row['Component']
                     oh_date = row['Last_Overhaul']
                     legacy_hrs = row['Claimed_Hours']
+                    target_col = row['Target_Timeline']
                     
-                    # Core Logic: Sum timeline starting from Overhaul Date
-                    mask = timeline_df['Date'] >= oh_date
-                    verified_hrs = timeline_df.loc[mask, 'ME_Hours'].sum()
-                    delta = verified_hrs - legacy_hrs
-                    
-                    audit_results.append({
-                        "Component": comp,
-                        "Overhaul Date": oh_date.strftime('%d-%b-%Y'),
-                        "Claimed (Doc)": int(legacy_hrs),
-                        "Verified (Excel)": int(verified_hrs),
-                        "Delta (Drift)": int(delta),
-                        "Status": "VERIFIED" if int(delta) == 0 else "DRIFT DETECTED"
-                    })
+                    # Ensure the required plumb line was successfully dropped in the Excel file
+                    if target_col in timeline_df.columns:
+                        # Mathematical Triangulation
+                        mask = timeline_df['Date'] >= oh_date
+                        verified_hrs = timeline_df.loc[mask, target_col].sum()
+                        delta = verified_hrs - legacy_hrs
+                        
+                        audit_results.append({
+                            "Component": comp,
+                            "Overhaul Date": oh_date.strftime('%d-%b-%Y'),
+                            "Claimed (Doc)": int(legacy_hrs),
+                            "Verified (Excel)": int(verified_hrs),
+                            "Delta (Drift)": int(delta),
+                            "Status": "VERIFIED" if int(delta) == 0 else "DRIFT DETECTED"
+                        })
+                    else:
+                        # Fallback if the Excel didn't contain DG columns
+                        audit_results.append({
+                            "Component": comp,
+                            "Overhaul Date": oh_date.strftime('%d-%b-%Y'),
+                            "Claimed (Doc)": int(legacy_hrs),
+                            "Verified (Excel)": 0,
+                            "Delta (Drift)": 0,
+                            "Status": "NO TIMELINE DATA"
+                        })
 
             # ═══════════════════════════════════════════════════════════════════════════════
             # 4. DASHBOARD RENDERING
@@ -216,7 +283,7 @@ if pms_file and logs_file:
             with t1:
                 if audit_results:
                     res_df = pd.DataFrame(audit_results)
-                    errors_corrected = len(res_df[res_df['Delta (Drift)'] != 0])
+                    errors_corrected = len(res_df[res_df['Status'] == 'DRIFT DETECTED'])
                     digital_seal = hashlib.sha256(res_df.to_json(orient='records').encode()).hexdigest()
 
                     # Poseidon HUD Generation
@@ -228,7 +295,7 @@ if pms_file and logs_file:
                                 <div class="hud-icon"><img src="{ICONS['VERIFIED']}"></div>
                             </div>
                             <div class="hud-val">{len(res_df)}</div>
-                            <div class="hud-sub">Extracted via ASCII Decoder</div>
+                            <div class="hud-sub">Extracted via Matrix Resolver</div>
                         </div>
                         <div class="hud-card" style="border-bottom: 3px solid {'#ff2a55' if errors_corrected > 0 else '#00e0b0'};">
                             <div class="hud-header">
@@ -258,8 +325,8 @@ if pms_file and logs_file:
                     """, unsafe_allow_html=True)
                     
                     def style_dataframe(row):
-                        if row['Delta (Drift)'] > 0: return ['background-color: rgba(255, 42, 85, 0.1); color: #ff8a9f'] * len(row)
-                        elif row['Delta (Drift)'] < 0: return ['background-color: rgba(201, 168, 76, 0.1); color: #c9a84c'] * len(row)
+                        if row['Status'] == 'DRIFT DETECTED': return ['background-color: rgba(255, 42, 85, 0.1); color: #ff8a9f'] * len(row)
+                        elif row['Status'] == 'NO TIMELINE DATA': return ['background-color: rgba(201, 168, 76, 0.1); color: #c9a84c'] * len(row)
                         return ['color: #00e0b0'] * len(row)
                     
                     st.dataframe(res_df.style.apply(style_dataframe, axis=1), use_container_width=True, hide_index=True)
@@ -273,6 +340,7 @@ if pms_file and logs_file:
                 if audit_results:
                     st.markdown("### Claimed vs Verified Running Hours")
                     st.markdown("<span style='color:#64748b; font-size:0.85rem;'>Native Streamlit rendering (Zero external chart dependencies)</span><br><br>", unsafe_allow_html=True)
+                    
                     # Prepare data for native st.bar_chart
                     plot_df = res_df[['Component', 'Claimed (Doc)', 'Verified (Excel)']].set_index('Component')
                     st.bar_chart(plot_df, color=["#c9a84c", "#00e0b0"], height=500)
