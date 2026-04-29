@@ -60,51 +60,64 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2. THE SURGICAL EXTRACTION ENGINES (Multi-System Vertical Plumb Lines)
+# 2. THE SURGICAL EXTRACTION ENGINES
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @st.cache_data(show_spinner=False)
 def parse_daily_hours_excel(file_bytes):
-    """Drops independent vertical plumb lines for ME, DG1, DG2, and DG3."""
-    # We attempt to read the 'DAILY OPERATING HOURS' sheet directly if possible.
+    """The Forward-Fill Plumb Line Engine."""
     try:
         df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name='DAILY OPERATING HOURS', header=None, engine='openpyxl', dtype=str)
     except:
         df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl', dtype=str)
         
-    header_idx = -1
     col_map = {}
+    header_row_1 = -1
+    header_row_2 = -1
     
-    # Sweep vertically to find the header row
-    for i in range(min(100, len(df_raw))):
-        row_str = " ".join([str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)])
-        if 'DATE' in row_str and ('HOURS' in row_str or 'OPERATING' in row_str):
-            header_idx = i
-            # Sweep horizontally to drop the specific plumb lines
-            for j in range(len(df_raw.columns)):
-                # Combine headers in case of merged cells
-                v1 = str(df_raw.iloc[max(0, i-1), j]).upper() if pd.notna(df_raw.iloc[max(0, i-1), j]) else ""
-                v2 = str(df_raw.iloc[i, j]).upper() if pd.notna(df_raw.iloc[i, j]) else ""
-                v_comb = f"{v1} {v2}"
-                
-                if 'DATE' in v_comb or 'DAY' in v_comb:
-                    col_map['Date'] = j
-                elif 'MAIN' in v_comb or 'M/E' in v_comb or 'ME ' in v_comb:
-                    col_map['ME_Hours'] = j
-                elif 'DG1' in v_comb or 'D/G 1' in v_comb or 'D/G NO.1' in v_comb or 'DG 1' in v_comb:
-                    col_map['DG1_Hours'] = j
-                elif 'DG2' in v_comb or 'D/G 2' in v_comb or 'D/G NO.2' in v_comb or 'DG 2' in v_comb:
-                    col_map['DG2_Hours'] = j
-                elif 'DG3' in v_comb or 'D/G 3' in v_comb or 'D/G NO.3' in v_comb or 'DG 3' in v_comb:
-                    col_map['DG3_Hours'] = j
+    # 1. Sweep vertically to find the hierarchical headers
+    for i in range(min(50, len(df_raw))):
+        row_vals = [str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)]
+        if any('MAIN ENGINE' in v for v in row_vals) or any('GENERATOR' in v for v in row_vals):
+            header_row_1 = i
+            # Look at the next few rows for the specific "OPERATING HOURS" sub-headers
+            for j in range(1, 4):
+                if i + j < len(df_raw):
+                    sub_vals = [str(x).upper() for x in df_raw.iloc[i+j].values if pd.notna(x)]
+                    if any('OPERATING HOURS' in v for v in sub_vals):
+                        header_row_2 = i + j
+                        break
             break
 
-    if header_idx != -1 and 'Date' in col_map:
-        df = df_raw.iloc[header_idx + 1:].copy()
+    # 2. Apply Forward-Fill logic to map parents to sub-columns
+    if header_row_1 != -1 and header_row_2 != -1:
+        # Forward fill the parent row to eliminate the merged-cell phantom gap
+        parent_headers = df_raw.iloc[header_row_1].ffill().fillna("").astype(str).str.upper()
+        sub_headers = df_raw.iloc[header_row_2].fillna("").astype(str).str.upper()
+        
+        for col_idx in range(len(df_raw.columns)):
+            parent = parent_headers.iloc[col_idx]
+            sub = sub_headers.iloc[col_idx]
+            
+            if 'DATE' in parent or 'DATE' in sub:
+                col_map['Date'] = col_idx
+            elif 'OPERATING HOURS' in sub:
+                if 'MAIN ENGINE' in parent:
+                    col_map['ME_Hours'] = col_idx
+                elif 'GENERATOR NO: 1' in parent or 'GENERATOR NO. 1' in parent:
+                    col_map['DG1_Hours'] = col_idx
+                elif 'GENERATOR NO: 2' in parent or 'GENERATOR NO. 2' in parent:
+                    col_map['DG2_Hours'] = col_idx
+                elif 'GENERATOR NO: 3' in parent or 'GENERATOR NO. 3' in parent:
+                    col_map['DG3_Hours'] = col_idx
+
+    # 3. Extract Timeline Data
+    if 'Date' in col_map:
+        # Start data extraction below the sub-header row
+        df = df_raw.iloc[header_row_2 + 1:].copy()
         clean_df = pd.DataFrame()
         clean_df['Date'] = pd.to_datetime(df.iloc[:, col_map['Date']], errors='coerce', dayfirst=True)
         
-        # Extract hours for any system found, default to 0 if column is missing
         for sys_col in ['ME_Hours', 'DG1_Hours', 'DG2_Hours', 'DG3_Hours']:
             if sys_col in col_map:
                 clean_df[sys_col] = df.iloc[:, col_map[sys_col]].apply(lambda x: re.sub(r'[^\d.]', '', str(x)))
@@ -115,7 +128,6 @@ def parse_daily_hours_excel(file_bytes):
         return clean_df.dropna(subset=['Date']).reset_index(drop=True), df_raw
     
     return pd.DataFrame(), df_raw
-
 
 @st.cache_data(show_spinner=False)
 def parse_pms_binary_doc(file_bytes):
@@ -138,16 +150,16 @@ def parse_pms_binary_doc(file_bytes):
     while i < len(cells):
         cell = cells[i].upper()
         
-        # State Machine Phase 1: Parent Tracker
+        # Phase 1: Parent State Tracker
         if "MAIN ENGINE" in cell:
             system = "ME"
             target_timeline = "ME_Hours"
             sub_units = ["Cyl 1", "Cyl 2", "Cyl 3", "Cyl 4", "Cyl 5", "Cyl 6"]
         elif "AUX. ENGINE" in cell or "D/G" in cell:
             system = "DG"
-            sub_units = ["DG1", "DG2", "DG3"] # DG components apply horizontally to DG1, DG2, DG3
+            sub_units = ["DG1", "DG2", "DG3"]
             
-        # State Machine Phase 2: Component Lock-On
+        # Phase 2: Component Lock-On
         is_comp = any(c in cell for c in COMPONENTS) and len(cell) < 40
         if is_comp:
             comp_name = cell
@@ -179,7 +191,6 @@ def parse_pms_binary_doc(file_bytes):
                     h_clean = re.sub(r'[^\d.]', '', hours[idx])
                     
                     if d_match and h_clean:
-                        # Determine specific timeline target for DGs
                         curr_timeline = target_timeline if system == 'ME' else f"{su}_Hours"
                         
                         extracted_data.append({
@@ -216,7 +227,7 @@ st.markdown(f"""
     <div class="hero-badge">
         <span style="color:#00e0b0">KERNEL</span>&ensp;Zero-Trust Triangulation<br>
         <span style="color:#00e0b0">DECODER</span>&ensp;State-Machine Matrix<br>
-        <span style="color:#fff">BUILD</span>&ensp;v10.0.1 Native Edition
+        <span style="color:#fff">BUILD</span>&ensp;v10.0.2 Zenith Edition
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -240,7 +251,7 @@ if pms_file and logs_file:
             total_days = len(timeline_df) if not timeline_df.empty else 0
             audit_results = []
             
-            # 2. Execute the Triangulation Math (Strictly matching systems to timelines)
+            # 2. Execute the Triangulation Math
             if not timeline_df.empty and not pms_df.empty:
                 for _, row in pms_df.iterrows():
                     comp = row['Component']
@@ -248,9 +259,7 @@ if pms_file and logs_file:
                     legacy_hrs = row['Claimed_Hours']
                     target_col = row['Target_Timeline']
                     
-                    # Ensure the required plumb line was successfully dropped in the Excel file
                     if target_col in timeline_df.columns:
-                        # Mathematical Triangulation
                         mask = timeline_df['Date'] >= oh_date
                         verified_hrs = timeline_df.loc[mask, target_col].sum()
                         delta = verified_hrs - legacy_hrs
@@ -264,7 +273,6 @@ if pms_file and logs_file:
                             "Status": "VERIFIED" if int(delta) == 0 else "DRIFT DETECTED"
                         })
                     else:
-                        # Fallback if the Excel didn't contain DG columns
                         audit_results.append({
                             "Component": comp,
                             "Overhaul Date": oh_date.strftime('%d-%b-%Y'),
@@ -286,7 +294,6 @@ if pms_file and logs_file:
                     errors_corrected = len(res_df[res_df['Status'] == 'DRIFT DETECTED'])
                     digital_seal = hashlib.sha256(res_df.to_json(orient='records').encode()).hexdigest()
 
-                    # Poseidon HUD Generation
                     st.markdown(f"""
                     <div class="hud-grid">
                         <div class="hud-card" style="border-bottom: 3px solid #00e0b0;">
@@ -341,13 +348,11 @@ if pms_file and logs_file:
                     st.markdown("### Claimed vs Verified Running Hours")
                     st.markdown("<span style='color:#64748b; font-size:0.85rem;'>Native Streamlit rendering (Zero external chart dependencies)</span><br><br>", unsafe_allow_html=True)
                     
-                    # Prepare data for native st.bar_chart
                     plot_df = res_df[['Component', 'Claimed (Doc)', 'Verified (Excel)']].set_index('Component')
                     st.bar_chart(plot_df, color=["#c9a84c", "#00e0b0"], height=500)
 
             with t3:
                 st.markdown("### The Transparency Engine")
-                st.markdown("<span style='color:#64748b; font-size:0.85rem;'>Review the raw data extracted by the parsers to physically verify the structural integrity of the documents before the math is applied.</span><br><br>", unsafe_allow_html=True)
                 
                 c1, c2 = st.columns(2)
                 with c1:
