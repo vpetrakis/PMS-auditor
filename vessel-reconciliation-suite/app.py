@@ -5,13 +5,7 @@ import io
 import re
 import hashlib
 from datetime import datetime
-import difflib
 import warnings
-
-try:
-    from docx import Document
-except ImportError:
-    pass
 
 warnings.filterwarnings("ignore")
 
@@ -49,141 +43,95 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2. DYNAMIC ENTITY RESOLUTION (The Translation Layer)
+# 2. THE INTELLIGENT AUTO-ROUTER & EXTRACTION ENGINES
 # ═══════════════════════════════════════════════════════════════════════════════
-# Hardcoded dictionary to force alignment between vessel shorthand and Master PMS
-MARITIME_ALIASES = {
-    "T/C": "TURBOCHARGER",
-    "M/E": "MAIN ENGINE",
-    "CYL": "CYLINDER",
-    "COV": "COVER",
-    "PIST": "PISTON",
-    "ASSY": "ASSEMBLY",
-    "VLV": "VALVE"
-}
 
-def normalize_component_name(raw_name):
-    """Standardizes component names to bridge the gap between .doc logs and .xlsx PMS."""
-    name = str(raw_name).upper().strip()
-    for shorthand, full_word in MARITIME_ALIASES.items():
-        name = name.replace(shorthand, full_word)
-    return re.sub(r'[^A-Z0-9\s]', '', name).strip() # Strip weird characters
+# Known components to anchor the ASCII Bell Ripper
+KNOWN_COMPONENTS = ['CYLINDER COVER', 'PISTON ASSEMBLY', 'STUFFING BOX', 'PISTON CROWN', 'CYLINDER LINER', 'EXAUST VALVE', 'STARTING VALVE', 'SAFETY VALVE', 'FUEL VALVES', 'FUEL PUMP']
 
-def fuzzy_match_components(log_component, pms_components_list):
-    """Uses algorithmic string similarity to find the closest match in the PMS."""
-    normalized_log = normalize_component_name(log_component)
-    normalized_pms = [normalize_component_name(c) for c in pms_components_list]
-    
-    matches = difflib.get_close_matches(normalized_log, normalized_pms, n=1, cutoff=0.7)
-    if matches:
-        # Find the original name based on the normalized match
-        match_idx = normalized_pms.index(matches[0])
-        return pms_components_list[match_idx]
-    return log_component # Return original if no high-confidence match is found
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 3. KINEMATIC SHAPE HUNTER (Bulletproof .doc Extraction)
-# ═══════════════════════════════════════════════════════════════════════════════
-def extract_by_shape(raw_text):
-    """Ignores tables entirely. Hunts mathematically for [DATE] adjacent to [0-24 HOURS]."""
-    lines = raw_text.splitlines()
-    data = []
-    
-    # Highly permissive regex to catch almost any maritime date format (e.g., 01-Mar, 1/3/26, 2026-03-01)
-    date_pattern = r'\b(\d{1,2}[-/\.]\w{2,9}[-/\.]?\d{0,4}|\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})\b'
-    
-    for line in lines:
-        dates_found = re.findall(date_pattern, line)
-        if dates_found:
-            clean_line = line.replace(dates_found[0], '')
-            # Find running hours (numbers between 0 and 24, allowing decimals)
-            nums_found = re.findall(r'\b(?:[0-1]?[0-9]|2[0-4])(?:\.\d+)?\b', clean_line)
-            if nums_found:
-                valid_hours = [float(n) for n in nums_found if 0.0 <= float(n) <= 24.0]
-                if valid_hours:
-                    data.append({'Date': dates_found[0], 'ME_Hours': max(valid_hours)})
-                    
-    if data:
-        df = pd.DataFrame(data)
-        df['Date'] = pd.to_datetime(df['Date'], errors='coerce', dayfirst=True)
-        return df.dropna().drop_duplicates(subset=['Date'], keep='last')
-    return None
-
-def rip_legacy_file(file_bytes, file_name):
-    """The brute-force extraction chamber."""
-    # Attempt standard excel if applicable
-    if file_name.endswith(('.xlsx', '.xls')):
-        try:
-            df = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl' if file_name.endswith('.xlsx') else 'xlrd', dtype=str)
-            # Flatten to text for the shape hunter
-            raw_text = df.to_string(index=False, header=False)
-            res = extract_by_shape(raw_text)
-            if res is not None: return res, raw_text
-        except: pass
-
-    # Brute force text rip for .doc binaries
-    raw_text = file_bytes.decode('latin-1', errors='ignore').replace('\x00', ' ')
-    
-    # Strip HTML tags if it's a disguised web archive
-    raw_text = re.sub(r'<[^>]+>', ' ', raw_text)
-    
-    res = extract_by_shape(raw_text)
-    return res, raw_text
-
-@st.cache_data(show_spinner=False)
-def process_monthly_logs(log_files):
-    all_logs = []
-    diagnostic_text = {}
-    
-    for f in log_files:
-        clean_df, raw_text = rip_legacy_file(f.getvalue(), f.name.lower())
-        diagnostic_text[f.name] = raw_text
-        if clean_df is not None and not clean_df.empty:
-            all_logs.append(clean_df)
-            
-    if not all_logs:
-        return pd.DataFrame(), diagnostic_text
-        
-    master_timeline = pd.concat(all_logs, ignore_index=True)
-    master_timeline = master_timeline.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').reset_index(drop=True)
-    return master_timeline, diagnostic_text
-
-@st.cache_data(show_spinner=False)
-def process_pms_master(file_bytes):
-    """Extracts components safely from the Master Excel."""
+def parse_timeline_excel(file_bytes):
+    """Extracts Date and Hours from the 'DAILY OPERATING HOURS' Excel file."""
     df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl', dtype=str)
-    header_idx, comp_idx, date_idx, hrs_idx = -1, -1, -1, -1
-
-    COMP_ALIASES = ['ITEM', 'COMPONENT', 'DESCRIPTION', 'NAME', 'ΕΞΑΡΤΗΜΑ']
-    OH_ALIASES = ['DATE', 'OVERHAUL', 'INSP', 'LAST', 'ΗΜΕΡ']
-    HRS_ALIASES = ['HOUR', 'RUN', 'CURRENT', 'CLAIM', 'ΩΡΕΣ']
-
-    def check_alias(val, aliases):
-        return any(a in str(val).upper() for a in aliases)
-
+    header_idx, date_idx, hrs_idx = -1, -1, -1
+    
     for i in range(min(50, len(df_raw))):
-        row_vals = df_raw.iloc[i].values
-        if any(check_alias(v, COMP_ALIASES) for v in row_vals) and any(check_alias(v, OH_ALIASES) for v in row_vals):
+        vals = [str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)]
+        if any('DATE' in v for v in vals) and any('OPERATING HOURS' in v for v in vals):
             header_idx = i
-            for j, val in enumerate(row_vals):
-                if check_alias(val, COMP_ALIASES) and comp_idx == -1: comp_idx = j
-                elif check_alias(val, OH_ALIASES) and date_idx == -1: date_idx = j
-                elif check_alias(val, HRS_ALIASES) and hrs_idx == -1: hrs_idx = j
+            for j, val in enumerate(df_raw.iloc[i].values):
+                v_str = str(val).upper() if pd.notna(val) else ""
+                if 'DATE' in v_str: date_idx = j
+                elif 'OPERATING HOURS' in v_str: hrs_idx = j
             break
 
-    if header_idx == -1: comp_idx, date_idx, hrs_idx, header_idx = 1, 5, 7, 7 
+    if header_idx != -1 and date_idx != -1 and hrs_idx != -1:
+        df = df_raw.iloc[header_idx + 1:].copy()
+        clean_df = pd.DataFrame()
+        clean_df['Date'] = pd.to_datetime(df.iloc[:, date_idx], errors='coerce', dayfirst=True)
+        clean_df['ME_Hours'] = df.iloc[:, hrs_idx].apply(lambda x: re.sub(r'[^\d.]', '', str(x)))
+        clean_df['ME_Hours'] = pd.to_numeric(clean_df['ME_Hours'], errors='coerce').fillna(0.0)
+        return clean_df.dropna(subset=['Date']), df_raw
+    return pd.DataFrame(), df_raw
 
-    df = df_raw.iloc[header_idx + 1:].copy()
-    clean_df = pd.DataFrame()
-    clean_df['Component'] = df.iloc[:, comp_idx].astype(str).str.strip()
-    clean_df['Last_Overhaul'] = pd.to_datetime(df.iloc[:, date_idx], errors='coerce', dayfirst=True)
-    clean_df['Claimed_Hours'] = pd.to_numeric(df.iloc[:, hrs_idx], errors='coerce').fillna(0)
+def parse_pms_binary_doc(file_bytes):
+    """The ASCII Bell Ripper: Cracks the 1997 OLE2 .doc table using the hidden \x07 delimiter."""
+    raw_text = file_bytes.decode('latin-1', errors='ignore')
+    clean_text = raw_text.replace('\x00', '')
     
-    clean_df = clean_df[(clean_df['Component'] != 'nan') & (clean_df['Component'] != 'None') & (clean_df['Component'] != '')]
-    return clean_df.dropna(subset=['Last_Overhaul']).reset_index(drop=True), df_raw
+    # Split the binary file entirely by the Microsoft Word Table Cell Delimiter (\x07)
+    cells = [c.strip() for c in clean_text.split('\x07') if c.strip()]
+    
+    extracted_data = []
+    current_component = None
+    dates_buffer = []
+    hours_buffer = []
+
+    date_pattern = r'\b(\d{1,2}[-/\.]\w{2,9}[-/\.]?\d{2,4}|\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})\b'
+    
+    for cell in cells:
+        # 1. Identify Component
+        if any(comp in cell.upper() for comp in KNOWN_COMPONENTS) and len(cell) < 30:
+            # If we already had a component, save it before starting the next one
+            if current_component and dates_buffer and hours_buffer:
+                extracted_data.append({
+                    'Component': current_component,
+                    # Safe date parsing
+                    'Last_Overhaul': pd.to_datetime(dates_buffer[-1], errors='coerce', dayfirst=True),
+                    'Claimed_Hours': max(hours_buffer) # Running hours are usually the largest number
+                })
+            current_component = cell.upper()
+            dates_buffer = []
+            hours_buffer = []
+            continue
+            
+        if current_component:
+            # 2. Extract Dates for this component
+            dates_found = re.findall(date_pattern, cell)
+            if dates_found:
+                dates_buffer.extend(dates_found)
+                
+            # 3. Extract Running Hours (>100 to avoid confusing with cylinder numbers like '1' or '2')
+            nums_found = re.findall(r'\b\d{3,6}\b', cell)
+            if nums_found:
+                hours_buffer.extend([float(n) for n in nums_found])
+
+    # Append the last component in the file
+    if current_component and dates_buffer and hours_buffer:
+        extracted_data.append({
+            'Component': current_component,
+            'Last_Overhaul': pd.to_datetime(dates_buffer[-1], errors='coerce', dayfirst=True),
+            'Claimed_Hours': max(hours_buffer)
+        })
+
+    if extracted_data:
+        df = pd.DataFrame(extracted_data).dropna(subset=['Last_Overhaul'])
+        return df, pd.DataFrame(cells, columns=["Raw ASCII Bytes"])
+    
+    return pd.DataFrame(), pd.DataFrame(cells, columns=["Raw ASCII Bytes"])
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 4. EXECUTION PIPELINE & UI
+# 3. MAIN PIPELINE EXECUTION
 # ═══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="hero">
@@ -192,54 +140,65 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-with st.container():
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>1. TARGET BASELINE (PMS Excel)</div>", unsafe_allow_html=True)
-        pms_file = st.file_uploader("Upload TEC-001 Master Sheet", type=["xlsx", "xls"], key="pms")
-    with col2:
-        st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>2. CHRONOLOGICAL LOGS (Legacy .doc/.xls)</div>", unsafe_allow_html=True)
-        logs_files = st.file_uploader("Upload Monthly Log(s). Multi-select enabled.", type=["xlsx", "xls", "docx", "doc", "csv", "txt", "rtf", "html"], accept_multiple_files=True, key="logs")
+st.markdown("<div style='color:#8ba1b5; font-size:0.9rem; font-weight:600; margin-bottom:10px;'>SECURE INGESTION ZONE</div>", unsafe_allow_html=True)
+st.markdown("<span style='color:#475569; font-size:0.8rem;'>Drag and drop ALL files (Daily Hours Excel & Overhaul .doc) into this single bucket. The Auto-Router will classify them.</span>", unsafe_allow_html=True)
 
-if pms_file and logs_files:
-    try:
-        with st.spinner("Initializing Kinematic Shape Hunter & Entity Resolution..."):
-            daily_df, diag_logs = process_monthly_logs(logs_files)
-            pms_df, diag_pms = process_pms_master(pms_file.getvalue())
+all_files = st.file_uploader("Drop Files Here", type=["xlsx", "xls", "docx", "doc", "csv"], accept_multiple_files=True, label_visibility="collapsed")
+
+if all_files:
+    with st.spinner("Initializing Auto-Router & ASCII Bell Ripper..."):
+        
+        timeline_df = pd.DataFrame()
+        pms_df = pd.DataFrame()
+        diag_timeline = None
+        diag_pms = None
+        
+        # --- THE AUTO-ROUTER ---
+        for f in all_files:
+            file_bytes = f.getvalue()
+            raw_text = file_bytes.decode('latin-1', errors='ignore').upper()
             
-            total_days_stitched = len(daily_df) if not daily_df.empty else 0
-            audit_results = []
-            physics_violations = []
+            # Classification Logic
+            if "DAILY OPERATING HOURS" in raw_text:
+                st.toast(f"Routed '{f.name}' to Timeline Engine", icon="⏱️")
+                timeline_df, diag_timeline = parse_timeline_excel(file_bytes)
+            elif "LAST O/H" in raw_text or "CYLINDER COVER" in raw_text:
+                st.toast(f"Routed '{f.name}' to PMS Engine", icon="⚙️")
+                pms_df, diag_pms = parse_pms_binary_doc(file_bytes)
+            else:
+                st.warning(f"File '{f.name}' could not be classified. Skipping.")
 
-            if total_days_stitched > 0 and not pms_df.empty:
-                # Physics Verification
-                for _, row in daily_df.iterrows():
-                    if row['ME_Hours'] > 24 or row['ME_Hours'] < 0:
-                        physics_violations.append({"Date": row['Date'].strftime('%d-%b-%Y'), "System": "MAIN ENGINE", "Logged Hours": row['ME_Hours']})
+        # --- MATH & TRIANGULATION ENGINE ---
+        total_days = len(timeline_df) if not timeline_df.empty else 0
+        audit_results = []
+        physics_violations = []
 
-                # Math Engine & Entity Resolution
-                for _, row in pms_df.iterrows():
-                    comp = row['Component']
-                    oh_date = row['Last_Overhaul']
-                    legacy_hrs = row['Claimed_Hours']
-                    
-                    # Fuzzy match the component name (e.g. Turbocharger <-> T/C) internally
-                    # (In this pure kinematic setup, we just apply the math to the timeline)
-                    mask = daily_df['Date'] >= oh_date
-                    verified_hrs = daily_df.loc[mask, 'ME_Hours'].sum()
-                    delta = verified_hrs - legacy_hrs
-                    
-                    audit_results.append({
-                        "Component": comp,
-                        "Overhaul Date": oh_date.strftime('%d-%b-%Y'),
-                        "Legacy Claim": int(legacy_hrs),
-                        "Verified Math": int(verified_hrs),
-                        "Delta": int(delta),
-                        "Status": "VERIFIED" if int(delta) == 0 else "DRIFT DETECTED"
-                    })
+        if not timeline_df.empty and not pms_df.empty:
+            for _, row in timeline_df.iterrows():
+                if row['ME_Hours'] > 24 or row['ME_Hours'] < 0:
+                    physics_violations.append({"Date": row['Date'].strftime('%d-%b-%Y'), "System": "MAIN ENGINE", "Logged Hours": row['ME_Hours']})
+
+            for _, row in pms_df.iterrows():
+                comp = row['Component']
+                oh_date = row['Last_Overhaul']
+                legacy_hrs = row['Claimed_Hours']
+                
+                # Math: Filter Timeline >= Overhaul Date
+                mask = timeline_df['Date'] >= oh_date
+                verified_hrs = timeline_df.loc[mask, 'ME_Hours'].sum()
+                delta = verified_hrs - legacy_hrs
+                
+                audit_results.append({
+                    "Component": comp,
+                    "Overhaul Date": oh_date.strftime('%d-%b-%Y'),
+                    "Legacy Claim": int(legacy_hrs),
+                    "Verified Math": int(verified_hrs),
+                    "Delta": int(delta),
+                    "Status": "VERIFIED" if int(delta) == 0 else "DRIFT DETECTED"
+                })
 
         # ═══════════════════════════════════════════════════════════════════════════════
-        # 5. DASHBOARD RENDERING
+        # 4. DASHBOARD RENDERING
         # ═══════════════════════════════════════════════════════════════════════════════
         st.markdown("<br>", unsafe_allow_html=True)
         tab1, tab2 = st.tabs(["📊 AUDIT DASHBOARD", "🔎 GLASS-BOX DIAGNOSTICS"])
@@ -254,8 +213,8 @@ if pms_file and logs_files:
                 <div class="hud-grid">
                     <div class="hud-card success"><div class="hud-title">Components Audited</div><div class="hud-val">{len(res_df)}</div></div>
                     <div class="hud-card {'warn' if errors_corrected > 0 else 'success'}"><div class="hud-title">Drift Anomalies</div><div class="hud-val" style="color: {'#ff2a55' if errors_corrected > 0 else '#00e0b0'};">{errors_corrected}</div></div>
-                    <div class="hud-card info"><div class="hud-title">Timeline Stitched</div><div class="hud-val">{total_days_stitched}</div></div>
-                    <div class="hud-card" style="border-bottom: 3px solid #7b68ee;"><div class="hud-title">Digital Seal (SHA-256)</div><div class="hud-val" style="font-size: 1.2rem; margin-top: 10px;">{digital_seal[:12]}...</div></div>
+                    <div class="hud-card info"><div class="hud-title">Timeline Stitched</div><div class="hud-val">{total_days}</div></div>
+                    <div class="hud-card" style="border-bottom: 3px solid #7b68ee;"><div class="hud-title">Digital Seal (SHA-256)</div><div class="hud-val" style="font-size: 1.2rem; margin-top: 10px;">{digital_seal[:10]}...</div></div>
                 </div>
                 """
                 st.markdown(hud_html, unsafe_allow_html=True)
@@ -273,20 +232,23 @@ if pms_file and logs_files:
                 csv_data = res_df.to_csv(index=False).encode('utf-8')
                 st.download_button("⬇️ DOWNLOAD IMMUTABLE BASELINE (.CSV)", data=csv_data, file_name=f"Verified_Baseline_{datetime.now().strftime('%Y%m%d')}.csv", mime='text/csv', type="primary")
             else:
-                st.error("Audit Failed: Zero data points passed the Kinematic Shape test. Check the Diagnostics tab to view the raw data stream.")
+                st.error("Audit Could Not Complete. Please check the Diagnostics tab.")
 
         with tab2:
             st.markdown("### The Transparency Engine")
-            st.markdown("<span style='color:#64748b;'>Review the raw text stripped from the binary files. This allows you to visually identify corrupt data structures before they hit the math engine.</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color:#64748b;'>Review the raw data extracted by the ASCII Bell Ripper and the Timeline Engine.</span>", unsafe_allow_html=True)
             
-            st.subheader("1. Raw Log Data Stream (Stripped from .doc)")
-            for filename, raw_text in diag_logs.items():
-                st.markdown(f"**File:** `{filename}`")
-                # Show first 1000 characters to prevent UI lag on massive files
-                st.text_area("Extracted Text Stream", raw_text[:1000] + "\n\n... [TRUNCATED FOR DISPLAY]", height=200, disabled=True)
-
-            st.subheader("2. Raw PMS Matrix (Extracted from TEC-001)")
-            st.dataframe(diag_pms.head(15), use_container_width=True)
-
-    except Exception as e:
-        st.error(f"🚨 Fatal Anomaly: {str(e)}")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.subheader("Raw Component Cells (.doc)")
+                if diag_pms is not None:
+                    st.dataframe(diag_pms, use_container_width=True, height=400)
+                else:
+                    st.info("No .doc PMS file routed yet.")
+                    
+            with c2:
+                st.subheader("Raw Timeline Matrix (Excel)")
+                if diag_timeline is not None:
+                    st.dataframe(diag_timeline.head(20), use_container_width=True, height=400)
+                else:
+                    st.info("No Excel Timeline file routed yet.")
