@@ -4,4 +4,5 @@ openpyxl
 xlrd
 python-docx
 lxml
+html5lib
 beautifulsoup4
