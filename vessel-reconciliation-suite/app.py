@@ -12,13 +12,7 @@ from zipfile import ZipFile
 from xml.etree import ElementTree as ET
 from difflib import SequenceMatcher
 import plotly.graph_objects as go
-
-# Optional Enterprise ML Stack
-try:
-    from sklearn.covariance import LedoitWolf
-    HAS_ML = True
-except ImportError:
-    HAS_ML = False
+import plotly.express as px
 
 warnings.filterwarnings("ignore")
 
@@ -61,10 +55,6 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] { gap: 24px; }
     .stTabs [data-baseweb="tab"] { height: 50px; white-space: pre-wrap; background-color: transparent; border-radius: 4px; color: var(--muted); font-weight: 600; }
     .stTabs [aria-selected="true"] { color: var(--teal); border-bottom: 2px solid var(--teal); }
-    
-    .truth-index-box { background: linear-gradient(135deg, rgba(0, 224, 176, 0.1), rgba(0, 224, 176, 0.02)); border: 1px solid rgba(0, 224, 176, 0.3); border-radius: 18px; padding: 30px; text-align: center; margin-bottom: 20px; }
-    .truth-index-val { font-size: 4rem; font-weight: 800; color: var(--teal); line-height: 1; font-family: 'JetBrains Mono', monospace; }
-    .truth-index-lbl { font-size: 0.85rem; color: #cbd5e1; text-transform: uppercase; letter-spacing: 2px; font-weight: 600; margin-top: 10px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -80,6 +70,13 @@ def extract_first_float(value):
     m = re.search(r"-?\d+(?:\.\d+)?", str(value).replace(",", ""))
     return float(m.group()) if m else np.nan
 
+def extract_report_date(filename):
+    m = re.search(r'(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[a-z]*[\s\.\-\_]*(\d{4})', filename, re.IGNORECASE)
+    if m:
+        try: return pd.to_datetime(f"01 {m.group(1)} {m.group(2)}")
+        except: pass
+    return pd.Timestamp.now()
+
 @st.cache_data(show_spinner=False)
 def parse_master_pms_excel(file_bytes):
     try:
@@ -88,20 +85,21 @@ def parse_master_pms_excel(file_bytes):
         df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=target_sheet, header=None, dtype=object, engine="openpyxl")
     except Exception: return [], {}
 
-    # Triple-Lock Extraction
-    engine_ytd_hours = {"ME": 0.0, "DG": 0.0}
+    # Extract Vessel Pulse (YTD and Max Monthly Hours)
+    engine_stats = {"ME_YTD": 0.0, "DG_YTD": 0.0, "ME_Pulse_Daily": 16.5, "DG_Pulse_Daily": 10.0}
     try:
         for i in range(min(25, len(df_raw))):
             row_joined = " | ".join([str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)])
             if any(k in row_joined for k in ["JAN", "FEB", "MONTHLY", "UP-TO-DATE"]):
                 target_row = i + 1 if ("JAN" in row_joined and df_raw.iloc[i, 9] == "Jan.") else i
                 if target_row < len(df_raw):
-                    monthly_sum = sum([extract_first_float(df_raw.iloc[target_row, c]) for c in range(9, 21) if c < len(df_raw.columns) and pd.notna(extract_first_float(df_raw.iloc[target_row, c]))])
-                    if monthly_sum > 0:
+                    monthly_vals = [extract_first_float(df_raw.iloc[target_row, c]) for c in range(9, 21) if c < len(df_raw.columns) and pd.notna(extract_first_float(df_raw.iloc[target_row, c]))]
+                    if monthly_vals:
                         sys = "ME" if ("MAIN ENGINE" in str(df_raw.iloc[max(0, target_row-2):target_row].values).upper()) else "ME"
-                        engine_ytd_hours[sys] = max(engine_ytd_hours[sys], monthly_sum)
+                        engine_stats[f"{sys}_YTD"] = sum(monthly_vals)
+                        # Assume the highest logged month represents 30 days of standard steaming tempo
+                        engine_stats[f"{sys}_Pulse_Daily"] = max(monthly_vals) / 30.0 
     except: pass
-    if engine_ytd_hours["ME"] == 0: engine_ytd_hours["ME"] = 8760 
 
     # Semantic Header Mapping
     item_col, hours_col, header_row = -1, -1, -1
@@ -135,7 +133,7 @@ def parse_master_pms_excel(file_bytes):
             if pd.notna(h) and len(item_str) > 2 and "HOURS" not in item_str and "DATE" not in item_str:
                 excel_records.append({'System': curr_sys, 'Unit': curr_unit, 'ExcelComponent': item_str, 'ExcelHours': h})
 
-    return excel_records, engine_ytd_hours
+    return excel_records, engine_stats
 
 @st.cache_data(show_spinner=False)
 def parse_pms_binary_doc(file_bytes, file_name=""):
@@ -148,6 +146,7 @@ def parse_pms_binary_doc(file_bytes, file_name=""):
 
     cells = parse_docx_xml(file_bytes) if file_name.lower().endswith(".docx") else [c.strip() for c in file_bytes.decode("latin-1", errors="ignore").replace("\x00", "").split("\x07") if c.strip()]
     extracted_data = []
+    report_date = extract_report_date(file_name)
 
     COMPONENTS = ['CYLINDER COVER', 'PISTON ASSY', 'PISTON ASSEMBLY', 'STUFFING BOX', 'PISTON CROWN', 'CYLINDER LINER', 'EXHAUST VALVE', 'STARTING VALVE', 'SAFETY VALVE', 'FUEL VALVE', 'FUEL PUMP', 'CROSSHEAD BEARING', 'BOTTOM END BEARING', 'MAIN BEARING', 'CYLINDER HEAD', 'CONNECTING ROD', 'TURBOCHARGER', 'AIR COOLER']
     system, sub_units = "ME", ["Cyl 1", "Cyl 2", "Cyl 3", "Cyl 4", "Cyl 5", "Cyl 6"]
@@ -173,7 +172,7 @@ def parse_pms_binary_doc(file_bytes, file_name=""):
                     d = pd.to_datetime(re.sub(r"\s+", " ", str(dates[idx]).strip()), errors="coerce", dayfirst=True)
                     h = extract_first_float(hours[idx])
                     if pd.notna(d) and pd.notna(h):
-                        extracted_data.append({'System': system, 'Unit': su, 'BaseComponent': cell, 'Component': f"[{system}] {cell} ({su})", 'Last_Overhaul': d, 'Claimed_Hours': float(h), 'Source_File': file_name})
+                        extracted_data.append({'System': system, 'Unit': su, 'BaseComponent': cell, 'Component': f"[{system}] {cell} ({su})", 'Last_Overhaul': d, 'Claimed_Hours': float(h), 'Report_Date': report_date, 'Source_File': file_name})
         i += 1
     return pd.DataFrame(extracted_data).dropna(subset=['Last_Overhaul']).reset_index(drop=True)
 
@@ -190,154 +189,79 @@ def get_verified_hours(doc_row, excel_records):
     return best_hours if best_score > 0.55 else None
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 3. THE ORACLE (PIML ENGINE: Quarantine, Conformal, Mahalanobis)
+# 3. KINEMATIC ORACLE (RATE-OF-CHANGE ENGINE)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def run_oracle_piml(audit_results, excel_records, all_docs_df, engine_ytd_hours):
+def run_kinematic_oracle(primary_df, historical_df, excel_records, engine_stats):
+    results = []
+    
+    # 1. Establish the Timeline & Engine Limits
     now = pd.Timestamp.now()
-    threat_matrix, ghosts = [], []
-    quarantine_count, fraud_flags = 0, 0
+    has_history = not historical_df.empty
     
-    # 1. Historical Copy-Paste Fraud Detection
-    copy_paste_threats = {}
-    if not all_docs_df.empty and len(all_docs_df['Source_File'].unique()) > 1:
-        for comp in all_docs_df['Component'].unique():
-            comp_data = all_docs_df[all_docs_df['Component'] == comp]
-            if len(comp_data) > 1 and comp_data['Claimed_Hours'].nunique() == 1:
-                copy_paste_threats[comp] = "CRITICAL: COPY-PASTE FRAUD (Identical hours historical match)"
+    for _, row in primary_df.iterrows():
+        comp = row['Component']
+        claimed = row['Claimed_Hours']
+        oh_date = row['Last_Overhaul']
+        sys_key = "ME" if "ME" in str(row['System']).upper() else "DG"
+        engine_pulse_daily = engine_stats.get(f"{sys_key}_Pulse_Daily", 16.5)
+        
+        # Cross-reference with Excel Master
+        verified = get_verified_hours(row, excel_records)
+        excel_status = "MISSING FROM EXCEL" if verified is None else ("VERIFIED" if int(verified) == int(claimed) else "DRIFT DETECTED")
+        delta_excel = (verified - claimed) if verified is not None else 0
+        
+        # Core Kinematic Variables
+        delta_h = 0.0
+        delta_days = 0.0
+        burn_rate = 0.0
+        history_match = False
+        
+        if has_history:
+            # Look for this component in the previous month
+            hist_match = historical_df[historical_df['Component'] == comp].sort_values('Report_Date', ascending=False)
+            if not hist_match.empty:
+                prev_row = hist_match.iloc[0]
+                delta_h = claimed - prev_row['Claimed_Hours']
+                delta_days = max(1, (row['Report_Date'] - prev_row['Report_Date']).days)
+                burn_rate = delta_h / delta_days
+                history_match = True
 
-    # 2. Physics Constraints (The Quarantine Protocol)
-    safe_deltas = []
-    for r in audit_results:
+        if not history_match:
+            # Fallback: Calculate average burn rate since overhaul
+            delta_h = claimed
+            delta_days = max(1, (row['Report_Date'] - oh_date).days)
+            burn_rate = delta_h / delta_days
+
+        # Physics Gates (The Traps)
         anomaly = "NONE"
-        comp_name, delta, claimed = r['Component'], r['Delta (Drift)'], r['Claimed (Doc)']
+        phase = "SAFE"
         
-        # Initialize all expected prediction keys so they always exist in the dict
-        r['Exp_Mean'] = 0.0
-        r['Exp_Upper'] = 0.0
-        r['Exp_Lower'] = 0.0
-        r['Phase'] = "SAFE"
-        r['Severity'] = 0
-        r['Z-Score'] = 0.0
-        r['Anomaly'] = "NONE"
-        
-        if r['Status'] == "MISSING FROM EXCEL":
-            r['Phase'] = "QUARANTINE"
-            r['Anomaly'] = "MISSING MASTER RECORD"
-            threat_matrix.append(r)
-            quarantine_count += 1
-            continue
-
-        if comp_name in copy_paste_threats:
-            anomaly, r['Phase'] = copy_paste_threats[comp_name], "QUARANTINE"
-            fraud_flags += 1
-
-        parent_sys = comp_name.split("]")[0].replace("[", "") if "[" in comp_name else "ME"
-        parent_max = engine_ytd_hours.get(parent_sys, 8760)
-        
-        oh_date = pd.to_datetime(r['Overhaul Date'], errors='coerce')
-        if pd.notna(oh_date) and anomaly == "NONE":
-            days_alive = max(1, (now - oh_date).days)
-            if oh_date.year == now.year and claimed > parent_max:
-                anomaly, r['Phase'] = f"TRIPLE-LOCK VIOLATION (> Engine Pulse {int(parent_max)}h)", "QUARANTINE"
-            elif claimed > (days_alive * 24):
-                anomaly, r['Phase'] = f"PHYSICS TIME WARP (> {days_alive*24} max hrs)", "QUARANTINE"
-
-        if delta < 0 and anomaly == "NONE":
-            anomaly, r['Phase'] = f"NEGATIVE DRIFT (-{abs(delta)}h)", "QUARANTINE"
-
-        r['Anomaly'] = anomaly
-        if anomaly == "NONE":
-            r['Phase'] = "SAFE"
-            safe_deltas.append(delta)
-        else:
-            threat_matrix.append(r)
-            quarantine_count += 1
-
-    # 3. Robust Statistics (Computed strictly on SAFE data)
-    median_delta, mad = (np.median(safe_deltas), np.median([abs(d - np.median(safe_deltas)) for d in safe_deltas])) if safe_deltas else (0, 1e-6)
-    if mad == 0: mad = 1e-6
-
-    # 4. Conformal ML Prediction & Mahalanobis
-    me_rate = engine_ytd_hours.get('ME', 0) / max(1, now.dayofyear)
-    dg_rate = engine_ytd_hours.get('DG', 0) / max(1, now.dayofyear)
-
-    ml_features = []
-    
-    for r in audit_results:
-        # Avoid recalculating Z-scores for Quarantined or Missing data
-        if r['Status'] != "MISSING FROM EXCEL":
-            z_score = 0.6745 * (r['Delta (Drift)'] - median_delta) / mad
-            r['Z-Score'] = round(z_score, 2)
-            r['Severity'] = 1 if abs(z_score) < 1 else 2 if abs(z_score) < 2 else 3 if abs(z_score) < 3.5 else 4 if abs(z_score) < 5 else 5
+        if excel_status == "MISSING FROM EXCEL":
+            anomaly, phase = "MISSING MASTER RECORD", "QUARANTINE"
+        elif delta_h < 0:
+            anomaly, phase = f"TIME REVERSAL (Negative Burn: {delta_h}h)", "QUARANTINE"
+        elif burn_rate > 24.0:
+            anomaly, phase = f"TIME WARP (>24h/day Burn Rate: {burn_rate:.1f}h/d)", "QUARANTINE"
+        elif burn_rate > (engine_pulse_daily * 1.3): # Allowing 30% margin for logging drift
+            anomaly, phase = f"KINEMATIC VIOLATION (Burn {burn_rate:.1f} > Engine {engine_pulse_daily:.1f})", "QUARANTINE"
+        elif history_match and delta_h == 0 and engine_pulse_daily > 0:
+            anomaly, phase = "COPY-PASTE FRAUD (Zero burn logged despite engine activity)", "QUARANTINE"
             
-            if r['Severity'] >= 4 and r['Phase'] == "SAFE":
-                r['Anomaly'] = f"SEVERE STAT OUTLIER (Z={z_score:.1f})"
-                threat_matrix.append(r)
+        results.append({
+            "Component": comp,
+            "Last Overhaul": oh_date.strftime('%d-%b-%Y') if pd.notna(oh_date) else "N/A",
+            "Claimed Hrs": int(claimed),
+            "Master Hrs": int(verified) if verified is not None else 0,
+            "Drift": int(delta_excel),
+            "Burn Rate (h/d)": round(burn_rate, 1),
+            "Engine Pulse (h/d)": round(engine_pulse_daily, 1),
+            "Status": excel_status,
+            "Anomaly": anomaly,
+            "Phase": phase
+        })
 
-            if r.get('Overhaul Date'):
-                oh_date = pd.to_datetime(r['Overhaul Date'], errors='coerce')
-                if pd.notna(oh_date):
-                    days_alive = max(1, (now - oh_date).days)
-                    sys = "ME" if "ME" in str(r.get('Component', 'ME')) else "DG"
-                    
-                    # Deterministic Prediction Baseline
-                    expected = days_alive * (me_rate if sys == "ME" else dg_rate)
-                    variance = expected * 0.12 + 50 # Conformal variance model (12% error margin + 50h fixed buffer)
-                    
-                    r['Exp_Mean'] = int(min(expected, days_alive * 24))
-                    r['Exp_Upper'] = int(min(expected + variance, days_alive * 24))
-                    r['Exp_Lower'] = int(max(0, expected - variance))
-
-                    if r['Phase'] == "SAFE":
-                        ml_features.append({
-                            "System": sys, "Component": r['Component'],
-                            "Days_Alive": days_alive, "Claimed": r['Claimed (Doc)'], "Delta": r['Delta (Drift)']
-                        })
-
-    # Ledoit-Wolf Multivariate Anomaly Detection
-    mahalanobis_alerts = 0
-    if HAS_ML and len(ml_features) > 6:
-        try:
-            df_ml = pd.DataFrame(ml_features)
-            for sys in df_ml['System'].unique():
-                sys_data = df_ml[df_ml['System'] == sys]
-                if len(sys_data) >= 5: # Need enough data points to compute covariance
-                    X = sys_data[['Days_Alive', 'Claimed', 'Delta']].values
-                    lw = LedoitWolf().fit(X)
-                    md = np.sqrt(np.maximum(lw.mahalanobis(X), 0))
-                    threshold = np.percentile(md, 95)
-                    
-                    # Flag anomalies back to audit_results
-                    for idx, (comp, md_val) in enumerate(zip(sys_data['Component'], md)):
-                        if md_val > threshold and md_val > 2.5:
-                            for r in audit_results:
-                                if r['Component'] == comp and r['Phase'] == "SAFE" and r['Severity'] < 4:
-                                    r['Anomaly'] = f"MULTIVARIATE ANOMALY (Mahalanobis D={md_val:.1f})"
-                                    threat_matrix.append(r)
-                                    mahalanobis_alerts += 1
-        except Exception as e:
-            pass # Graceful degradation if matrix collapses
-
-    # 5. Ghost Sweep
-    primary_doc_comps = [re.sub(r'[^A-Z]', '', normalize_text(c).replace("ASSY", "ASSEMBLY")) for c in all_docs_df['BaseComponent'].tolist()] if not all_docs_df.empty else []
-    for er in excel_records:
-        e_comp_clean = re.sub(r'[^A-Z]', '', er['ExcelComponent'].replace("ASSY", "ASSEMBLY"))
-        if any(k in er['ExcelComponent'].upper() for k in ['LINER', 'PISTON', 'BEARING', 'PUMP', 'VALVE']):
-            if not any(SequenceMatcher(None, e_comp_clean, w).ratio() > 0.55 or w in e_comp_clean or e_comp_clean in w for w in primary_doc_comps):
-                ghosts.append({"System": er['System'], "Unit": er['Unit'], "Component": er['ExcelComponent'], "Master Hours": er['ExcelHours'], "Anomaly": "GHOST COMPONENT"})
-
-    # 6. Bayesian Truth Index
-    total = len(audit_results)
-    safe_ratio = len(safe_deltas) / total if total > 0 else 0
-    truth_index = int(
-        (40 * safe_ratio) + 
-        (30 * max(0, 1 - (quarantine_count / max(1, total)))) + 
-        (15 * max(0, 1 - (len(ghosts) / 20))) + 
-        (15 * max(0, 1 - (mahalanobis_alerts / 10)))
-    )
-
-    return audit_results, threat_matrix, ghosts, truth_index
+    return results
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 4. ORCHESTRATOR & UI
@@ -349,12 +273,12 @@ st.markdown(f"""
         <img src="data:image/svg+xml;base64,{LOGO_SVG}" class="hero-logo" alt=""/>
         <div>
             <div class="hero-title">PMS AUDITOR</div>
-            <div class="hero-sub">Enterprise Maritime Forensics</div>
+            <div class="hero-sub">Kinematic Fraud Detection Engine</div>
         </div>
     </div>
     <div class="hero-badge">
         <span style="color:var(--teal)">KERNEL</span>&ensp;Triple-Lock Cross-Check<br>
-        <span style="color:var(--gold)">ORACLE</span>&ensp;PIML & Quarantine Logic<br>
+        <span style="color:var(--gold)">ORACLE</span>&ensp;Kinematic Rate-of-Change<br>
         <span style="color:#ffffff">BUILD</span>&ensp;v13.0.1 Zenith Master
     </div>
 </div>
@@ -369,152 +293,134 @@ with col2:
     logs_file = st.file_uploader("Upload Excel PMS Log", type=["xlsx", "xls"], key="logs_box", label_visibility="collapsed")
 
 if pms_files and logs_file:
-    with st.spinner("Executing Chronological Cross-Reference & ML Predictive Guardrails..."):
+    with st.spinner("Executing Kinematic Cross-Reference & Burn Rate Analysis..."):
         try:
+            # 1. Parse all Word Documents
             all_docs_frames = []
-            primary_doc_df = pd.DataFrame()
-            
             for file in pms_files:
                 df = parse_pms_binary_doc(file.getvalue(), file.name)
-                if not df.empty:
-                    all_docs_frames.append(df)
-                    if primary_doc_df.empty: primary_doc_df = df 
+                if not df.empty: all_docs_frames.append(df)
+            
+            if not all_docs_frames:
+                st.error("No valid data extracted from Word documents.")
+                st.stop()
+                
+            all_docs_df = pd.concat(all_docs_frames, ignore_index=True)
+            
+            # Sort chronologically to find the "Current" (Primary) document
+            all_docs_df.sort_values('Report_Date', ascending=False, inplace=True)
+            latest_date = all_docs_df['Report_Date'].iloc[0]
+            primary_doc_df = all_docs_df[all_docs_df['Report_Date'] == latest_date]
+            historical_doc_df = all_docs_df[all_docs_df['Report_Date'] < latest_date]
 
-            all_docs_df = pd.concat(all_docs_frames, ignore_index=True) if all_docs_frames else pd.DataFrame()
-            excel_records, engine_ytd_hours = parse_master_pms_excel(logs_file.getvalue())
+            # 2. Parse Excel Master
+            excel_records, engine_stats = parse_master_pms_excel(logs_file.getvalue())
 
-            raw_audit_results = []
-            if not primary_doc_df.empty and excel_records:
-                for _, row in primary_doc_df.iterrows():
-                    comp, oh_date, legacy_hrs = row['Component'], row['Last_Overhaul'], row['Claimed_Hours']
-                    verified_hrs = get_verified_hours(row, excel_records)
-
-                    if verified_hrs is not None:
-                        delta = verified_hrs - legacy_hrs
-                        raw_audit_results.append({"Component": comp, "Overhaul Date": oh_date.strftime('%d-%b-%Y') if pd.notna(oh_date) else "", "Claimed (Doc)": int(round(float(legacy_hrs))), "Verified (Excel)": int(round(float(verified_hrs))), "Delta (Drift)": int(round(float(delta))), "Status": "VERIFIED" if int(round(float(delta))) == 0 else "DRIFT DETECTED"})
-                    else:
-                        raw_audit_results.append({"Component": comp, "Overhaul Date": oh_date.strftime('%d-%b-%Y') if pd.notna(oh_date) else "", "Claimed (Doc)": int(round(float(legacy_hrs))), "Verified (Excel)": 0, "Delta (Drift)": 0, "Status": "MISSING FROM EXCEL"})
-
-            audit_results, threat_matrix, ghosts, truth_index = run_oracle_piml(raw_audit_results, excel_records, all_docs_df, engine_ytd_hours)
+            # 3. Run Kinematic Oracle
+            audit_results = run_kinematic_oracle(primary_doc_df, historical_doc_df, excel_records, engine_stats)
+            res_df = pd.DataFrame(audit_results)
 
             st.markdown("<br>", unsafe_allow_html=True)
-            t1, t2, t3 = st.tabs(["📊 IMMUTABLE LEDGER", "👁️ PIML ORACLE (PREDICTIVE AI)", "🔎 MASTER DATABASE X-RAY"])
+            t1, t2, t3 = st.tabs(["📊 IMMUTABLE LEDGER", "👁️ KINEMATIC ORACLE (PHYSICS)", "🔎 CHRONOLOGICAL X-RAY"])
 
             with t1:
-                if audit_results:
-                    # 1. Instantiate the Master DataFrame
-                    res_df = pd.DataFrame(audit_results)
-                    errors_corrected = len(res_df[res_df['Status'] == 'DRIFT DETECTED'])
-                    quarantined = len(res_df[res_df['Phase'] == 'QUARANTINE'])
-                    digital_seal = hashlib.sha256(res_df.to_json(orient='records').encode()).hexdigest()
+                errors_corrected = len(res_df[res_df['Status'] == 'DRIFT DETECTED'])
+                quarantined = len(res_df[res_df['Phase'] == 'QUARANTINE'])
+                digital_seal = hashlib.sha256(res_df.to_json(orient='records').encode()).hexdigest()
 
-                    st.markdown(f"""
-                    <div class="hud-grid">
-                        <div class="hud-card" style="border-bottom: 3px solid var(--teal);">
-                            <div class="hud-header"><div class="hud-title">Components Audited</div></div>
-                            <div class="hud-val">{len(res_df)}</div>
-                        </div>
-                        <div class="hud-card" style="border-bottom: 3px solid {'var(--gold)' if errors_corrected > 0 else 'var(--teal)'};">
-                            <div class="hud-header"><div class="hud-title">Mathematical Drift</div></div>
-                            <div class="hud-val" style="color: {'var(--gold)' if errors_corrected > 0 else 'var(--teal)'};">{errors_corrected}</div>
-                        </div>
-                        <div class="hud-card" style="border-bottom: 3px solid {'var(--red)' if quarantined > 0 else 'var(--teal)'};">
-                            <div class="hud-header"><div class="hud-title">Quarantined Physics</div></div>
-                            <div class="hud-val" style="color: {'var(--red)' if quarantined > 0 else 'var(--teal)'};">{quarantined}</div>
-                        </div>
+                st.markdown(f"""
+                <div class="hud-grid">
+                    <div class="hud-card" style="border-bottom: 3px solid var(--teal);">
+                        <div class="hud-header"><div class="hud-title">Components Audited</div></div>
+                        <div class="hud-val">{len(res_df)}</div>
                     </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # 2. Extract Columns to Hide, leaving Phase accessible in the Master DataFrame
-                    hide_cols = ['Severity', 'Z-Score', 'Anomaly', 'Exp_Mean', 'Exp_Upper', 'Exp_Lower', 'Phase']
-                    display_cols = [c for c in res_df.columns if c not in hide_cols]
-                    display_df = res_df[display_cols]
-                    
-                    # 3. Architecturally Bulletproof Styler (Reads from Master, applies to View)
-                    def apply_row_styles(df):
-                        style_df = pd.DataFrame('', index=df.index, columns=df.columns)
-                        for idx in df.index:
-                            phase = res_df.loc[idx, 'Phase']
-                            status = res_df.loc[idx, 'Status']
-                            if phase == 'QUARANTINE':
-                                style_df.loc[idx, :] = 'background-color: rgba(255, 42, 85, 0.1); color: #ff8a9f'
-                            elif status == 'DRIFT DETECTED':
-                                style_df.loc[idx, :] = 'color: #c9a84c'
-                            else:
-                                style_df.loc[idx, :] = 'color: #00e0b0'
-                        return style_df
-                    
-                    # Execute render
-                    st.dataframe(display_df.style.apply(apply_row_styles, axis=None), use_container_width=True, hide_index=True)
-                else:
-                    st.error("Audit Could Not Complete. Check the Diagnostics tab.")
+                    <div class="hud-card" style="border-bottom: 3px solid {'var(--gold)' if errors_corrected > 0 else 'var(--teal)'};">
+                        <div class="hud-header"><div class="hud-title">Mathematical Drift</div></div>
+                        <div class="hud-val" style="color: {'var(--gold)' if errors_corrected > 0 else 'var(--teal)'};">{errors_corrected}</div>
+                    </div>
+                    <div class="hud-card" style="border-bottom: 3px solid {'var(--red)' if quarantined > 0 else 'var(--teal)'};">
+                        <div class="hud-header"><div class="hud-title">Quarantined Physics</div></div>
+                        <div class="hud-val" style="color: {'var(--red)' if quarantined > 0 else 'var(--teal)'};">{quarantined}</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Safe Styler Architecture (Eliminates KeyError)
+                hide_cols = ['Phase', 'Anomaly', 'Engine Pulse (h/d)']
+                display_cols = [c for c in res_df.columns if c not in hide_cols]
+                display_df = res_df[display_cols]
+                
+                def apply_row_styles(df_view):
+                    style_df = pd.DataFrame('', index=df_view.index, columns=df_view.columns)
+                    for idx in df_view.index:
+                        phase = res_df.loc[idx, 'Phase']
+                        status = res_df.loc[idx, 'Status']
+                        if phase == 'QUARANTINE':
+                            style_df.loc[idx, :] = 'background-color: rgba(255, 42, 85, 0.1); color: #ff8a9f'
+                        elif status == 'DRIFT DETECTED':
+                            style_df.loc[idx, :] = 'color: #c9a84c'
+                        else:
+                            style_df.loc[idx, :] = 'color: #00e0b0'
+                    return style_df
+                
+                st.dataframe(display_df.style.apply(apply_row_styles, axis=None), use_container_width=True, hide_index=True)
 
             with t2:
-                if audit_results:
-                    st.markdown(f"""
-                    <div class="truth-index-box">
-                        <div class="truth-index-val">{truth_index}%</div>
-                        <div class="truth-index-lbl">BAYESIAN TRUTH PROBABILITY</div>
-                        <div style="font-size:0.75rem; color:#64748b; margin-top:5px;">Computed via Triple-Locks, MAD Stats, Quarantine Sieves, and Ledoit-Wolf Multivariate Logic.</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    df_ml = pd.DataFrame(audit_results)
-                    df_ml = df_ml[df_ml['Status'] != 'MISSING FROM EXCEL'].copy()
+                # --- VISUAL 1: THE BURN RATE IMPOSSIBILITY MATRIX ---
+                st.markdown("<h4 style='color:var(--text); margin-bottom:20px;'>1. Burn Rate Impossibility Matrix</h4>", unsafe_allow_html=True)
+                
+                plot_df = res_df[res_df['Status'] != 'MISSING FROM EXCEL'].copy()
+                if not plot_df.empty:
+                    # Color coding logic
+                    colors = []
+                    for _, r in plot_df.iterrows():
+                        if r['Burn Rate (h/d)'] > 24: colors.append('#ff2a55') # Impossible
+                        elif r['Burn Rate (h/d)'] > (r['Engine Pulse (h/d)'] * 1.3): colors.append('#c9a84c') # Suspicious
+                        else: colors.append('#00e0b0') # Verified
+                    plot_df['Color'] = colors
                     
-                    if not df_ml.empty:
-                        fig = go.Figure()
+                    # Sort by Burn Rate descending for visual impact
+                    plot_df = plot_df.sort_values('Burn Rate (h/d)', ascending=True).tail(20) # Show top 20 anomalies
+                    
+                    fig = go.Figure()
+                    fig.add_trace(go.Bar(
+                        y=plot_df['Component'], x=plot_df['Burn Rate (h/d)'], orientation='h',
+                        marker_color=plot_df['Color'],
+                        text=plot_df['Burn Rate (h/d)'].astype(str) + " h/d", textposition='outside'
+                    ))
+                    
+                    # Engine Pulse Gold Line
+                    avg_pulse = plot_df['Engine Pulse (h/d)'].mean()
+                    fig.add_vline(x=avg_pulse, line_width=3, line_dash="dash", line_color="#c9a84c", annotation_text=f"Engine Pulse ({avg_pulse:.1f}h)", annotation_position="top right")
+                    
+                    # Physics Limit Red Line
+                    fig.add_vline(x=24.0, line_width=3, line_dash="solid", line_color="#ff2a55", annotation_text="Physics Limit (24h)", annotation_position="top right")
+                    
+                    fig.update_layout(
+                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#94a3b8'),
+                        xaxis=dict(title="Accumulated Hours Per Day", gridcolor='rgba(255,255,255,0.05)'),
+                        height=600, margin=dict(l=20, r=40, t=40, b=20)
+                    )
+                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-                        # Add Conformal Bounds Layer
-                        valid_dates = pd.to_datetime(df_ml['Overhaul Date'], errors='coerce')
-                        mask = pd.notna(valid_dates)
-                        if mask.any():
-                            df_bounds = df_ml[mask].sort_values('Overhaul Date')
-                            fig.add_trace(go.Scatter(
-                                x=pd.to_datetime(df_bounds['Overhaul Date']).tolist() + pd.to_datetime(df_bounds['Overhaul Date']).tolist()[::-1],
-                                y=df_bounds['Exp_Upper'].tolist() + df_bounds['Exp_Lower'].tolist()[::-1],
-                                fill="toself", fillcolor="rgba(123,104,238,0.1)", line=dict(color="rgba(255,255,255,0)"),
-                                hoverinfo="skip", name="Conformal Physics Bounds"
-                            ))
-
-                        # Plot Data Points
-                        clean = df_ml[(df_ml['Severity'] < 3) & (df_ml['Phase'] == 'SAFE')]
-                        if not clean.empty:
-                            fig.add_trace(go.Scatter(x=pd.to_datetime(clean['Overhaul Date'], errors='coerce'), y=clean['Claimed (Doc)'], mode='markers', name='Verified Data', marker=dict(color='#00e0b0', size=8, opacity=0.7), text=clean['Component'] + "<br>Claimed: " + clean['Claimed (Doc)'].astype(str) + "h<br>ML Expected: " + clean['Exp_Mean'].astype(str) + "h", hoverinfo='text'))
-                            
-                        threats = df_ml[(df_ml['Severity'] >= 3) | (df_ml['Phase'] == 'QUARANTINE')]
-                        if not threats.empty:
-                            fig.add_trace(go.Scatter(x=pd.to_datetime(threats['Overhaul Date'], errors='coerce'), y=threats['Claimed (Doc)'], mode='markers', name='Severe Mathematical Anomaly', marker=dict(color='#ff2a55', size=14, symbol='x', line=dict(color='#1a0508', width=1)), text=threats['Component'] + "<br>Claimed: " + threats['Claimed (Doc)'].astype(str) + "h<br>ML Expected: " + threats['Exp_Mean'].astype(str) + "h<br>" + threats['Anomaly'], hoverinfo='text'))
-
-                        fig.update_layout(title="CONFORMAL PHYSICS RADAR (CLAIMED VS EXPECTED)", plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#94a3b8'), xaxis=dict(title="Last Overhaul Date", gridcolor='rgba(255,255,255,0.05)'), yaxis=dict(title="Running Hours", gridcolor='rgba(255,255,255,0.05)'), hovermode="closest", margin=dict(l=20, r=20, t=50, b=20), legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
-                        st.plotly_chart(fig, use_container_width=True)
-
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.markdown("<h4 style='color:var(--gold);'>⚠️ Threat Matrix (Quarantine & Outliers)</h4>", unsafe_allow_html=True)
-                        if threat_matrix:
-                            tm_df = pd.DataFrame(threat_matrix)[['Component', 'Claimed (Doc)', 'Exp_Mean', 'Anomaly']]
-                            st.dataframe(tm_df, use_container_width=True, hide_index=True)
-                        else:
-                            st.success("Zero severe mathematical anomalies detected.")
-
-                    with c2:
-                        st.markdown("<h4 style='color:var(--teal);'>👻 Subsystem Ghost Sweep</h4>", unsafe_allow_html=True)
-                        if ghosts:
-                            st.dataframe(pd.DataFrame(ghosts), use_container_width=True, hide_index=True)
-                        else:
-                            st.success("No major Ghost Components detected.")
+                # --- VISUAL 2: THE THREAT MATRIX ---
+                st.markdown("<h4 style='color:var(--gold); margin-top:30px;'>2. Kinematic Threat Matrix</h4>", unsafe_allow_html=True)
+                threats = res_df[res_df['Phase'] == 'QUARANTINE'][['Component', 'Claimed Hrs', 'Burn Rate (h/d)', 'Anomaly']]
+                if not threats.empty:
+                    st.dataframe(threats, use_container_width=True, hide_index=True)
+                else:
+                    st.success("Zero Kinematic or Physics violations detected. Data aligns with the Engine Pulse.")
 
             with t3:
                 c1, c2 = st.columns(2)
                 with c1:
-                    st.markdown(f"<div style='color:var(--muted); font-size:0.8rem; font-weight:600; margin-bottom:10px;'>DOC REPORTS ({len(pms_files)} Extracted)</div>", unsafe_allow_html=True)
-                    if not all_docs_df.empty: st.dataframe(all_docs_df[['Source_File', 'Component', 'Claimed_Hours', 'Last_Overhaul']], use_container_width=True, height=500)
+                    st.markdown(f"<div style='color:var(--muted); font-size:0.8rem; font-weight:600; margin-bottom:10px;'>CHRONOLOGICAL REPORTS ({len(pms_files)} Uploaded)</div>", unsafe_allow_html=True)
+                    st.dataframe(all_docs_df[['Source_File', 'Report_Date', 'Component', 'Claimed_Hours']], use_container_width=True, height=500)
                 with c2:
-                    st.markdown("<div style='color:var(--muted); font-size:0.8rem; font-weight:600; margin-bottom:10px;'>EXCEL MASTER (Extracted)</div>", unsafe_allow_html=True)
-                    ml_status = "ACTIVE (Ledoit-Wolf Matrix)" if HAS_ML else "OFFLINE (Fallback to Deterministic)"
-                    st.info(f"Engine Triple-Lock Extracted: ME = {engine_ytd_hours.get('ME', 0)}h, DG = {engine_ytd_hours.get('DG', 0)}h | AI: {ml_status}")
-                    if excel_records: st.dataframe(pd.DataFrame(excel_records), use_container_width=True, height=500)
+                    st.markdown("<div style='color:var(--muted); font-size:0.8rem; font-weight:600; margin-bottom:10px;'>EXCEL MASTER ENGINE STATS</div>", unsafe_allow_html=True)
+                    st.json(engine_stats)
+                    st.markdown("<div style='color:var(--muted); font-size:0.8rem; font-weight:600; margin-top:20px; margin-bottom:10px;'>RAW MASTER LOGS</div>", unsafe_allow_html=True)
+                    st.dataframe(pd.DataFrame(excel_records), use_container_width=True, height=350)
 
         except Exception as e:
             st.error(f"🚨 Pipeline Execution Halted: {str(e)}")
