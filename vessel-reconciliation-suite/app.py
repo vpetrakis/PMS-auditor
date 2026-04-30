@@ -1,1138 +1,688 @@
-from __future__ import annotations
-
-import io
-import re
-import json
-import math
-import hashlib
-import zipfile
-from dataclasses import dataclass, asdict
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple
-
+import streamlit as st
 import pandas as pd
 import numpy as np
+import re
+import io
+import math
+import traceback
+import base64
+import warnings
+from pathlib import Path
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEPENDENCIES & SETUP
+# ═══════════════════════════════════════════════════════════════════════════════
 try:
-    from docx import Document
-    HAS_DOCX = True
-except Exception:
-    HAS_DOCX = False
+    from xgboost import XGBRegressor
+    from sklearn.covariance import LedoitWolf
+    from sklearn.model_selection import KFold
+    import shap
+    HAS_ML = True
+except ImportError:
+    HAS_ML = False
 
+warnings.filterwarnings("ignore")
+st.set_page_config(page_title="POSEIDON TITAN", page_icon="⚓", layout="wide", initial_sidebar_state="collapsed")
 
-# =========================
-# Exceptions
-# =========================
+# ═══════════════════════════════════════════════════════════════════════════════
+# CSS LOADER & PREMIUM ANIMATED SVG ASSETS
+# ═══════════════════════════════════════════════════════════════════════════════
+def load_local_css():
+    css_path = Path(__file__).parent / "assets" / "style.css"
+    if css_path.exists():
+        st.markdown(f"<style>{css_path.read_text()}</style>", unsafe_allow_html=True)
 
-class ParserError(Exception):
-    pass
+load_local_css()
 
+def _u(s):
+    return f"data:image/svg+xml;base64,{base64.b64encode(s.encode()).decode()}"
 
-class SchemaError(ParserError):
-    pass
+LOGO_SVG = base64.b64encode(
+    b'<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="pg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#c9a84c"/><stop offset="50%" stop-color="#00e0b0"/><stop offset="100%" stop-color="#fff"/></linearGradient></defs><circle cx="24" cy="24" r="22" fill="none" stroke="url(#pg)" stroke-width="0.8" opacity=".3"/><path d="M24 6L24 42" stroke="url(#pg)" stroke-width="1.5" stroke-linecap="round"/><path d="M12 24Q24 32 36 24" fill="none" stroke="url(#pg)" stroke-width="1.5" stroke-linecap="round"/></svg>'
+).decode()
 
+VERIFIED_SVG = """<svg viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg"><style>@keyframes pulse { 0% { r: 12; opacity: 0.2; } 50% { r: 13.5; opacity: 0.6; } 100% { r: 12; opacity: 0.2; } } .p { animation: pulse 2s infinite ease-in-out; }</style><circle cx="14" cy="14" r="12" fill="none" stroke="#00e0b0" stroke-width="1" class="p"/><circle cx="14" cy="14" r="7.5" fill="#061a14" stroke="#00e0b0" stroke-width="1.5"/><polyline points="10,14.5 12.8,17 18,10.5" fill="none" stroke="#00e0b0" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>"""
+GHOST_SVG = """<svg viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg"><style>@keyframes flash { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } } @keyframes spin { 100% { transform: rotate(360deg); } } .f { animation: flash 1s infinite; } .s { transform-origin: center; animation: spin 5s linear infinite; }</style><circle cx="14" cy="14" r="12" fill="none" stroke="#ff2a55" stroke-width="1" stroke-dasharray="4 3" class="s"/><circle cx="14" cy="14" r="7.5" fill="#1a0508" stroke="#ff2a55" stroke-width="1.5" class="f"/><g stroke="#ff2a55" stroke-width="2.5" stroke-linecap="round" class="f"><line x1="11" y1="11" x2="17" y2="17"/><line x1="17" y1="11" x2="11" y2="17"/></g></svg>"""
+OUTLIER_SVG = """<svg viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg"><style>@keyframes breathe { 0%, 100% { stroke-width: 1.2; transform: scale(1); } 50% { stroke-width: 2.2; transform: scale(1.05); } } .b { transform-origin: center; animation: breathe 2s infinite ease-in-out; }</style><rect x="4" y="4" width="20" height="20" rx="5" fill="none" stroke="#c9a84c" stroke-width="1.2" class="b"/><circle cx="14" cy="14" r="4.5" fill="#0e0a1e" stroke="#c9a84c" stroke-width="1.5"/><circle cx="14" cy="14" r="1.8" fill="#c9a84c"/></svg>"""
 
-class ReconciliationError(ParserError):
-    pass
+ICONS = {
+    "VERIFIED": _u(VERIFIED_SVG),
+    "GHOST BUNKER": _u(GHOST_SVG),
+    "STAT OUTLIER": _u(OUTLIER_SVG)
+}
 
+STATUS_COLORS = {
+    "VERIFIED": "#00e0b0",
+    "GHOST BUNKER": "#ff2a55",
+    "STAT OUTLIER": "#c9a84c"
+}
 
-# =========================
-# Dataclasses
-# =========================
-
-@dataclass(frozen=True)
-class SourceFingerprint:
-    file_name: str
-    sha256: str
-    byte_size: int
-
-
-@dataclass
-class PMSItemRecord:
-    vessel_name: str
-    code_no: str
-    item_name: str
-    job: str
-    interval_raw: str
-    interval_hrs_1: Optional[float]
-    interval_hrs_2: Optional[float]
-    date_last_inspection: Optional[pd.Timestamp]
-    op_hours_end_last_year: Optional[float]
-    current_operating_hours: Optional[float]
-    estimated_next_inspection: Optional[pd.Timestamp]
-    jan: Optional[float]
-    feb: Optional[float]
-    mar: Optional[float]
-    apr: Optional[float]
-    may: Optional[float]
-    jun: Optional[float]
-    jul: Optional[float]
-    aug: Optional[float]
-    sep: Optional[float]
-    oct: Optional[float]
-    nov: Optional[float]
-    dec: Optional[float]
-    equipment_group: str
-    section_name: str
-    source_sheet: str
-    source_row_excel: int
-
-
-@dataclass
-class RunningHoursWordRecord:
-    vessel_name: str
-    section: str
-    cyl_or_unit: Optional[str]
-    description: str
-    periodicity_raw: str
-    date_of_last_oh: Optional[pd.Timestamp]
-    running_hours_since_last_oh: Optional[float]
-    total_running_hours: Optional[float]
-    this_month_hours: Optional[float]
-    raw_excerpt: str
-
-
-@dataclass
-class LedgerRecord:
-    ledger_id: str
-    vessel_name: str
-    code_no: str
-    pms_item_name: str
-    pms_section: str
-    pms_group: str
-    pms_date_last_inspection: Optional[pd.Timestamp]
-    pms_current_operating_hours: Optional[float]
-    pms_estimated_next_inspection: Optional[pd.Timestamp]
-    pms_mar_hours: Optional[float]
-    word_section: Optional[str]
-    word_unit: Optional[str]
-    word_description: Optional[str]
-    word_date_last_oh: Optional[pd.Timestamp]
-    word_running_hours_since_last_oh: Optional[float]
-    word_total_running_hours: Optional[float]
-    word_this_month_hours: Optional[float]
-    match_score: float
-    reconciliation_status: str
-    reconciliation_notes: str
-    pms_source_hash: str
-    word_source_hash: Optional[str]
-    created_at_utc: str
-
-
-# =========================
-# Constants
-# =========================
-
-MONTH_COLS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
-
-PMS_REQUIRED_CANONICAL = [
-    "code_no",
-    "items",
-    "job",
-    "interval_1",
-    "interval_2",
-    "date_last_inspection",
-    "op_hours_end_last_year",
-    "current_operating_hours",
-    "estimated_date_next_inspection",
+REQUIRED_RAW_COLS = [
+    "FO_A", "FO_L", "MGO_A", "MGO_L", "Bunk_FO", "Bunk_MGO", "Bunk_MELO", "Bunk_HSCYLO",
+    "Bunk_LSCYLO", "Bunk_GELO", "Bunk_CYLO", "MELO_R", "HSCYLO_R", "LSCYLO_R", "GELO_R",
+    "CYLO_R", "Speed", "DistLeg", "TotalDist", "CargoQty", "Voy", "Port", "AD", "Date", "Time"
 ]
 
-PMS_HEADER_SYNONYMS = {
-    "code_no": {
-        "code no", "code no.", "code", "code number"
-    },
-    "items": {
-        "items", "item", "description"
-    },
-    "job": {
-        "job"
-    },
-    "interval_1": {
-        "interval"
-    },
-    "interval_2": {
-        ""  # second interval column is often blank-headed
-    },
-    "date_last_inspection": {
-        "date of last inspection", "date of last oh", "date last inspection"
-    },
-    "op_hours_end_last_year": {
-        "operating hours at the end of last year",
-        "operating hrs at the end of last year"
-    },
-    "current_operating_hours": {
-        "current operating hours", "current op. hours", "current op hours"
-    },
-    "estimated_date_next_inspection": {
-        "estimated date of next inspection", "estimated date next inspection"
-    },
-    "jan": {"jan", "jan."},
-    "feb": {"feb", "feb."},
-    "mar": {"mar", "mar."},
-    "apr": {"apr", "apr."},
-    "may": {"may", "may."},
-    "jun": {"jun", "jun."},
-    "jul": {"jul", "jul."},
-    "aug": {"aug", "aug."},
-    "sep": {"sep", "sep."},
-    "oct": {"oct", "oct."},
-    "nov": {"nov", "nov."},
-    "dec": {"dec", "dec."},
-}
-
-WORD_SECTION_ALIASES = {
-    "main engine": "MAIN ENGINE",
-    "turbocharger": "TURBOCHARGER",
-    "auxiliary boiler": "AUXILIARY BOILER",
-    "exh gas boiler": "EXHAUST GAS BOILER",
-    "main air compressors": "MAIN AIR COMPRESSORS",
-    "aux. engine": "AUX ENGINE",
-    "aux engine": "AUX ENGINE",
-    "dg": "DIESEL GENERATOR",
-    "diesel generator": "DIESEL GENERATOR",
-}
-
-ITEM_NORMALIZATION_MAP = {
-    "cylinder cover": "CYLINDER COVER",
-    "cylinder cover cooling jacket": "CYLINDER COVER COOLING JACKET",
-    "cyl. liner": "CYLINDER LINER",
-    "cyl liner": "CYLINDER LINER",
-    "cylinder liner": "CYLINDER LINER",
-    "piston assy": "PISTON ASSEMBLY",
-    "piston assembly": "PISTON ASSEMBLY",
-    "stuffing box": "STUFFING BOX",
-    "piston crown": "PISTON CROWN",
-    "exhaust valve": "EXHAUST VALVE",
-    "exaust valve": "EXHAUST VALVE",
-    "starting valve": "STARTING VALVE",
-    "safety valve": "SAFETY VALVE",
-    "fuel valve": "FUEL VALVES",
-    "fuel valves": "FUEL VALVES",
-    "fuel pump": "FUEL PUMP",
-    "plunger and barrel renewal": "PLUNGER AND BARREL RENEWAL",
-    "fuel pump suction valve": "FUEL PUMP SUCTION VALVE",
-    "fuel pump puncture valve": "FUEL PUMP PUNCTURE VALVE",
-    "crosshead pin bearing": "CROSSHEAD BEARINGS",
-    "crosshead bearings": "CROSSHEAD BEARINGS",
-    "crankpin bearing": "BOTTOM END BEARINGS",
-    "bottom end bearings": "BOTTOM END BEARINGS",
-    "main bearings": "MAIN BEARINGS",
-    "main bearing": "MAIN BEARINGS",
-    "adjust valve head clearance": "ADJUST VALVE HEAD CLEARANCE",
-    "turbocharger general inspection": "TURBOCHARGER",
-    "air cooler cleaning": "AIR COOLER CLEANING",
-}
-
-
-# =========================
-# Utility
-# =========================
-
-def file_fingerprint(file_name: str, file_bytes: bytes) -> SourceFingerprint:
-    return SourceFingerprint(
-        file_name=file_name,
-        sha256=hashlib.sha256(file_bytes).hexdigest(),
-        byte_size=len(file_bytes)
-    )
-
-
-def normalize_text(x) -> str:
-    if x is None:
-        return ""
-    s = str(x)
-    s = s.replace("\xa0", " ")
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-
-def normalize_key(x) -> str:
-    s = normalize_text(x).lower()
-    s = s.replace("_", " ")
-    s = re.sub(r"[^\w\s./-]", "", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-
-def normalize_item_name(x: str) -> str:
-    s = normalize_key(x)
-    s = s.replace("insp. through scav ports", "")
-    s = s.replace("through scav ports", "")
-    s = s.replace("p. rings", "")
-    s = s.replace("cooling jacket", "cooling jacket")
-    s = re.sub(r"\bno\.?\s*\d+\b", "", s)
-    s = re.sub(r"\bcyl\.?\b", "cylinder", s)
-    s = re.sub(r"\bassy\b", "assembly", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    for k, v in ITEM_NORMALIZATION_MAP.items():
-        if k in s:
-            return v
-    return s.upper()
-
-
-def to_float(x) -> Optional[float]:
-    if x is None:
-        return None
-    if isinstance(x, float) and math.isnan(x):
-        return None
-    s = normalize_text(x)
-    if s == "":
-        return None
-    s = s.replace(",", "")
-    s = s.replace("HRS", "").replace("Hours", "").replace("hours", "")
-    s = s.strip()
-    if s in {"-", "--", "NA", "N/A"}:
-        return None
-    try:
-        return float(s)
-    except Exception:
-        return None
-
-
-def to_timestamp(x) -> Optional[pd.Timestamp]:
-    if x is None:
-        return None
-    if isinstance(x, pd.Timestamp):
-        return x if not pd.isna(x) else None
-    s = normalize_text(x)
-    if s == "":
-        return None
-
-    s = s.replace(" -", "-").replace("- ", "-")
-    s = re.sub(r"\bSEPT\b", "SEP", s, flags=re.I)
-    s = re.sub(r"\bJULY\b", "JUL", s, flags=re.I)
-    s = re.sub(r"\bJUNE\b", "JUN", s, flags=re.I)
-    s = re.sub(r"\bMARCH\b", "MAR", s, flags=re.I)
-    s = re.sub(r"\s+", " ", s).strip()
-
-    for dayfirst in (True, False):
+# ═══════════════════════════════════════════════════════════════════════════════
+# FORENSIC UTILITIES & LEXICAL SIEVE
+# ═══════════════════════════════════════════════════════════════════════════════
+@st.cache_data(show_spinner=False)
+def load_fleet_master():
+    db_path = Path(__file__).parent / "fleet_master.csv"
+    if db_path.exists():
         try:
-            ts = pd.to_datetime(s, errors="raise", dayfirst=dayfirst)
-            if pd.isna(ts):
-                continue
-            return ts
+            return pd.read_csv(db_path).set_index("Vessel_Name")
         except Exception:
             pass
+    return pd.DataFrame(columns=["Min_Speed_kn", "Ghost_Tol_Sea", "Ghost_Tol_Port"])
 
-    return None
+fleet_db = load_fleet_master()
 
+def _sn(val):
+    if pd.isna(val):
+        return np.nan
+    s = str(val).strip().upper()
+    if s in ["NIL", "N/A", "NA", "XXX", "NONE", "UNKNOWN", "BLANK", "-", "X", "", "NULL"]:
+        return np.nan
+    s = re.sub(r"[^\d.\-]", "", s)
+    try:
+        return float(s) if s and s not in (".", "-", "-.") else np.nan
+    except ValueError:
+        return np.nan
 
-def safe_str(x) -> str:
-    return "" if x is None or (isinstance(x, float) and math.isnan(x)) else str(x)
+def _sn0(val):
+    v = _sn(val)
+    return 0.0 if np.isnan(v) else v
 
+def _parse_dt(d_val, t_val):
+    try:
+        if pd.isna(d_val) or str(d_val).strip() == "":
+            return pd.NaT
+        ds = str(d_val).strip()
+        ds = re.sub(r"20224", "2024", ds)
+        ds = re.sub(r"20023", "2023", ds)
+        ds = re.sub(
+            r"(\d+)\s+([A-Za-z]+)\.?\s+(\d{4})",
+            lambda m: f"{m.group(3)}-{m.group(2)[:3]}-{m.group(1).zfill(2)}",
+            ds
+        )
+        p = pd.to_datetime(ds, errors="coerce")
+        if pd.isna(p):
+            return pd.NaT
+        d_str = p.strftime("%Y-%m-%d")
+        t_str = "00:00"
+        if pd.notna(t_val) and str(t_val).strip() != "":
+            tr = re.sub(r"[HhLlTtUuCc\s]", "", str(t_val).strip())
+            m = re.match(r"^(\d{1,2}):(\d{2})", tr)
+            if m:
+                t_str = f"{m.group(1).zfill(2)}:{m.group(2)}"
+        return pd.to_datetime(f"{d_str} {t_str}", errors="coerce")
+    except Exception:
+        return pd.NaT
 
-def is_code_like(s: str) -> bool:
-    s = normalize_text(s).upper()
-    return bool(re.match(r"^[A-Z]{2,4}-\d{2}(?:-\d{2}(?:\.\d+)?)?$", s))
+def compute_dqi(r1, r2, days, phys_burn, drift, ghost_tol):
+    if days <= 0 or pd.isna(phys_burn):
+        return 0
+    scores = [100.0]
+    scores.append(100.0 if phys_burn >= ghost_tol else max(0.0, 100 - abs(phys_burn) * 5))
+    tol = max(30.0, 0.03 * max(_sn0(r1.get("FO_A")), _sn0(r2.get("FO_A"))))
+    scores.append(math.exp(-0.5 * ((drift) / tol) ** 2) * 100 if tol > 0 else 0.0)
+    return int(sum(scores) / len(scores))
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# THE ROUTER: CONFIGURATION-DRIVEN MANIFEST MAPPING (DECOUPLED EXTRACTION)
+# ═══════════════════════════════════════════════════════════════════════════════
+MULTI_VERSION_MAP = {
+    "COURAGE": 118,
+    "DIGNITY": 128,
+    "FALCON": 32,
+    "GEORGIAT": 175,
+    "GEORGIA T": 175,
+    "STEFANOST": 201,
+    "STEFANOS T": 201,
+    "CHRISTIANNA": 85
+}
 
-def vessel_from_sheet(df: pd.DataFrame) -> str:
-    sample = " ".join(
-        normalize_text(v)
-        for v in df.iloc[:12, :8].fillna("").astype(str).values.ravel().tolist()
-        if normalize_text(v)
-    )
-    m = re.search(r"MV\s+([A-Z0-9 .\-]+)", sample, flags=re.I)
-    if not m:
-        raise SchemaError("Unable to locate vessel name in workbook top area.")
-    return normalize_text("MV " + m.group(1))
+def _map_columns(top_header, bottom_header, num_cols):
+    cols_found = {}
+    for j in range(num_cols):
+        c1 = str(top_header.iloc[j]).upper().strip() if pd.notna(top_header.iloc[j]) else ""
+        c2 = str(bottom_header.iloc[j]).upper().strip() if pd.notna(bottom_header.iloc[j]) else ""
+        c_comb = f"{c1} {c2}".strip()
 
+        if "VOY" in c_comb:
+            cols_found["Voy"] = j
+        elif "PORT" in c_comb or "LOC" in c_comb:
+            cols_found["Port"] = j
+        elif "A/D" in c_comb or c_comb == "AD" or "STATUS" in c_comb:
+            cols_found["AD"] = j
+        elif "SPEED" in c_comb:
+            cols_found["Speed"] = j
+        elif "CARGO" in c_comb or "QTY" in c_comb:
+            cols_found["CargoQty"] = j
+        elif "DATE" in c_comb or "DAY" in c_comb:
+            cols_found["Date"] = j
+        elif "TIME" in c_comb and "TOTAL" not in c_comb:
+            cols_found["Time"] = j
+        elif "DIST" in c_comb and "LEG" in c_comb:
+            cols_found["DistLeg"] = j
+        elif "DIST" in c_comb and "TOTAL" in c_comb:
+            cols_found["TotalDist"] = j
+        elif "BUNKER" in c1 or "RECEIV" in c1:
+            if "FO" in c2 and "MGO" not in c2:
+                cols_found["Bunk_FO"] = j
+            elif "MGO" in c2:
+                cols_found["Bunk_MGO"] = j
+            elif "MELO" in c2:
+                cols_found["Bunk_MELO"] = j
+            elif "HSCYLO" in c2 or "HS CYL" in c2:
+                cols_found["Bunk_HSCYLO"] = j
+            elif "LSCYLO" in c2 or "LS CYL" in c2:
+                cols_found["Bunk_LSCYLO"] = j
+            elif "CYLO" in c2 or "CYL OIL" in c2:
+                cols_found["Bunk_CYLO"] = j
+            elif "GELO" in c2:
+                cols_found["Bunk_GELO"] = j
+        elif "ROB" in c1 or "REMAIN" in c1:
+            if "FO A" in c2 or "FO ACT" in c2:
+                cols_found["FO_A"] = j
+            elif "FO L" in c2 or "FO LED" in c2:
+                cols_found["FO_L"] = j
+            elif "MGO A" in c2:
+                cols_found["MGO_A"] = j
+            elif "MGO L" in c2:
+                cols_found["MGO_L"] = j
+            elif "MELO" in c2:
+                cols_found["MELO_R"] = j
+            elif "HSCYLO" in c2 or "HS CYL" in c2:
+                cols_found["HSCYLO_R"] = j
+            elif "LSCYLO" in c2 or "LS CYL" in c2:
+                cols_found["LSCYLO_R"] = j
+            elif "CYLO" in c2 or "CYL OIL" in c2:
+                cols_found["CYLO_R"] = j
+            elif "GELO" in c2:
+                cols_found["GELO_R"] = j
+    return cols_found
 
-def find_sheet_name(xls: pd.ExcelFile, preferred: str) -> str:
-    names = list(xls.sheet_names)
-    exact = [n for n in names if normalize_key(n) == normalize_key(preferred)]
-    if exact:
-        return exact[0]
-    partial = [n for n in names if normalize_key(preferred) in normalize_key(n)]
-    if partial:
-        return partial[0]
-    raise SchemaError(f"Required sheet '{preferred}' not found. Available sheets: {names}")
+def _parse_standard(df_raw):
+    header_idx = -1
+    cols_found = {}
+    for i in range(min(150, len(df_raw))):
+        vals = [str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)]
+        if any(k in v for v in vals for k in ["DATE", "DAY"]) and any(k in v for v in vals for k in ["PORT", "LOC"]):
+            header_idx = i
+            top_header = df_raw.iloc[i].ffill()
+            bottom_header = df_raw.iloc[i + 1] if i + 1 < len(df_raw) else pd.Series([np.nan] * len(df_raw.columns))
+            cols_found = _map_columns(top_header, bottom_header, len(df_raw.columns))
 
+    if header_idx == -1:
+        raise ValueError("Matrix Lock Failed: No valid headers found.")
 
-def row_text(row: pd.Series) -> str:
-    return " | ".join(normalize_text(v) for v in row.tolist() if normalize_text(v))
+    df = df_raw.iloc[header_idx + 1:].copy().reset_index(drop=True)
+    for std_name, exc_idx in cols_found.items():
+        df[std_name] = df.iloc[:, exc_idx]
+    return df
 
+def _parse_manifest(df_raw, start_row):
+    idx = max(0, int(start_row) - 1)
 
-# =========================
-# DAILY OPERATING HOURS
-# =========================
-
-def parse_daily_operating_hours(file_bytes: bytes) -> Tuple[str, pd.DataFrame, Dict[str, float]]:
-    xls = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
-    sheet = find_sheet_name(xls, "DAILY OPERATING HOURS")
-    raw = pd.read_excel(xls, sheet_name=sheet, header=None)
-
-    vessel_name = vessel_from_sheet(raw)
-
-    header_row = None
-    machine_row = None
-    for i in range(min(len(raw) - 1, 40)):
-        line1 = row_text(raw.iloc[i])
-        line2 = row_text(raw.iloc[i + 1]) if i + 1 < len(raw) else ""
-        if "DATE" in line1.upper() and "OPERATING HOURS" in line1.upper():
-            header_row = i
-            machine_row = i + 1
+    header_idx = -1
+    cols_found = {}
+    for i in range(min(15, len(df_raw))):
+        vals = [str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)]
+        if any(k in v for v in vals for k in ["DATE", "DAY"]) and any(k in v for v in vals for k in ["PORT", "LOC"]):
+            header_idx = i
+            top_header = df_raw.iloc[i].ffill()
+            bottom_header = df_raw.iloc[i + 1] if i + 1 < len(df_raw) else pd.Series([np.nan] * len(df_raw.columns))
+            cols_found = _map_columns(top_header, bottom_header, len(df_raw.columns))
             break
 
-    if header_row is None or machine_row is None:
-        raise SchemaError("Could not anchor DAILY OPERATING HOURS header block.")
-
-    date_col = None
-    machine_map: Dict[int, str] = {}
-    mach_line = [normalize_text(v) for v in raw.iloc[machine_row].tolist()]
-
-    for j, v in enumerate(mach_line):
-        vu = v.upper()
-        if vu == "DATE":
-            date_col = j
-        if "MAIN ENGINE" in vu:
-            machine_map[j] = "ME"
-        elif "DIESEL GENERATOR NO.1" in vu or "DIESEL GENERATOR NO. 1" in vu:
-            machine_map[j] = "DG1"
-        elif "DIESEL GENERATOR NO.2" in vu or "DIESEL GENERATOR NO. 2" in vu:
-            machine_map[j] = "DG2"
-        elif "DIESEL GENERATOR NO.3" in vu or "DIESEL GENERATOR NO. 3" in vu:
-            machine_map[j] = "DG3"
-        elif "DIESEL GENERATOR NO.4" in vu or "DIESEL GENERATOR NO. 4" in vu:
-            machine_map[j] = "DG4"
-
-    if date_col is None:
-        date_col = 0
-
-    if not machine_map:
-        raise SchemaError("Could not map machines in DAILY OPERATING HOURS sheet.")
-
-    records = []
-    monthly_totals: Dict[str, float] = {}
-
-    start = machine_row + 1
-    for i in range(start, len(raw)):
-        first = normalize_text(raw.iat[i, date_col])
-        if first == "":
-            continue
-
-        if first.lower().startswith("total monthly oper"):
-            for col_idx, machine in machine_map.items():
-                val = to_float(raw.iat[i, col_idx + 1] if col_idx + 1 < raw.shape[1] else None)
-                if val is not None:
-                    month_key = f"{machine}_row_{i}"
-                    monthly_totals[month_key] = val
-            continue
-
-        dt = to_timestamp(first)
-        if dt is None:
-            continue
-
-        for col_idx, machine in sorted(machine_map.items()):
-            val = to_float(raw.iat[i, col_idx + 1] if col_idx + 1 < raw.shape[1] else None)
-            if val is not None:
-                records.append({
-                    "date": dt.normalize(),
-                    "machine": machine,
-                    "hours": val,
-                    "source_row_excel": i + 1,
-                    "source_sheet": sheet,
-                })
-
-    df = pd.DataFrame(records)
-    if df.empty:
-        raise SchemaError("No daily operating hours records extracted.")
-
-    df["month"] = df["date"].dt.month
-    agg = (
-        df.groupby(["machine", "month"], as_index=False)["hours"]
-        .sum()
-        .rename(columns={"hours": "monthly_hours"})
-    )
-
-    summary = {
-        f"{r.machine}_M{int(r.month):02d}": float(r.monthly_hours)
-        for r in agg.itertuples(index=False)
-    }
-
-    return vessel_name, df, summary
-
-
-# =========================
-# PMS SHEET
-# =========================
-
-def find_pms_header_row(raw: pd.DataFrame) -> int:
-    for i in range(min(len(raw), 80)):
-        vals = [normalize_key(v) for v in raw.iloc[i].tolist()]
-        joined = " | ".join(vals)
-        if (
-            "code no" in joined
-            and "items" in joined
-            and "date of last inspection" in joined
-            and "current operating hours" in joined
-        ):
-            return i
-    raise SchemaError("PMS header row not found.")
-
-
-def canonicalize_pms_headers(raw: pd.DataFrame, header_row: int) -> Dict[str, int]:
-    vals = [normalize_key(v) for v in raw.iloc[header_row].tolist()]
-    mapping: Dict[str, int] = {}
-
-    for idx, val in enumerate(vals):
-        for canon, synonyms in PMS_HEADER_SYNONYMS.items():
-            if val in synonyms:
-                if canon not in mapping:
-                    mapping[canon] = idx
-
-    # Special handling for duplicate interval columns next to JOB
-    if "interval_1" not in mapping:
-        raise SchemaError("PMS column 'INTERVAL' not found.")
-    first_interval_idx = mapping["interval_1"]
-    mapping["interval_2"] = first_interval_idx + 1
-
-    missing = [c for c in PMS_REQUIRED_CANONICAL if c not in mapping]
-    if missing:
-        raise SchemaError(f"Missing canonical PMS columns: {missing}")
-
-    for m in MONTH_COLS:
-        if m not in mapping:
-            raise SchemaError(f"Missing monthly PMS column: {m}")
-
-    return mapping
-
-
-def classify_pms_row(code_no: str, items: str) -> str:
-    code = normalize_text(code_no).upper()
-    item = normalize_text(items).upper()
-
-    if not code and not item:
-        return "blank"
-    if is_code_like(code):
-        return "item"
-    if code.endswith("-00") or code.endswith("-00-00"):
-        return "section"
-    if "TOTAL WORKING HOURS" in code or "CURRENT YEAR UP-TO-DATE" in code:
-        return "summary"
-    if item == "" and code != "":
-        return "section"
-    return "other"
-
-
-def parse_pms_sheet(file_bytes: bytes) -> Tuple[str, pd.DataFrame]:
-    xls = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
-    sheet = find_sheet_name(xls, "PMS")
-    raw = pd.read_excel(xls, sheet_name=sheet, header=None)
-
-    vessel_name = vessel_from_sheet(raw)
-    header_row = find_pms_header_row(raw)
-    colmap = canonicalize_pms_headers(raw, header_row)
-
-    current_group = ""
-    current_section = ""
-    records: List[PMSItemRecord] = []
-
-    for i in range(header_row + 1, len(raw)):
-        code_no = normalize_text(raw.iat[i, colmap["code_no"]])
-        items = normalize_text(raw.iat[i, colmap["items"]])
-
-        row_type = classify_pms_row(code_no, items)
-
-        if row_type == "blank":
-            continue
-
-        if row_type == "section":
-            if code_no:
-                current_section = code_no
-            if items:
-                current_group = items
-            elif code_no and not items:
-                current_group = code_no
-            continue
-
-        if row_type != "item":
-            continue
-
-        code_u = code_no.upper()
-        if not is_code_like(code_u):
-            continue
-
-        rec = PMSItemRecord(
-            vessel_name=vessel_name,
-            code_no=code_u,
-            item_name=items,
-            job=normalize_text(raw.iat[i, colmap["job"]]),
-            interval_raw=" | ".join(
-                [normalize_text(raw.iat[i, colmap["interval_1"]]), normalize_text(raw.iat[i, colmap["interval_2"]])]
-            ).strip(" |"),
-            interval_hrs_1=to_float(raw.iat[i, colmap["interval_1"]]),
-            interval_hrs_2=to_float(raw.iat[i, colmap["interval_2"]]),
-            date_last_inspection=to_timestamp(raw.iat[i, colmap["date_last_inspection"]]),
-            op_hours_end_last_year=to_float(raw.iat[i, colmap["op_hours_end_last_year"]]),
-            current_operating_hours=to_float(raw.iat[i, colmap["current_operating_hours"]]),
-            estimated_next_inspection=to_timestamp(raw.iat[i, colmap["estimated_date_next_inspection"]]),
-            jan=to_float(raw.iat[i, colmap["jan"]]),
-            feb=to_float(raw.iat[i, colmap["feb"]]),
-            mar=to_float(raw.iat[i, colmap["mar"]]),
-            apr=to_float(raw.iat[i, colmap["apr"]]),
-            may=to_float(raw.iat[i, colmap["may"]]),
-            jun=to_float(raw.iat[i, colmap["jun"]]),
-            jul=to_float(raw.iat[i, colmap["jul"]]),
-            aug=to_float(raw.iat[i, colmap["aug"]]),
-            sep=to_float(raw.iat[i, colmap["sep"]]),
-            oct=to_float(raw.iat[i, colmap["oct"]]),
-            nov=to_float(raw.iat[i, colmap["nov"]]),
-            dec=to_float(raw.iat[i, colmap["dec"]]),
-            equipment_group=current_group,
-            section_name=current_section,
-            source_sheet=sheet,
-            source_row_excel=i + 1,
-        )
-        records.append(rec)
-
-    if not records:
-        raise SchemaError("No PMS item rows extracted.")
-
-    df = pd.DataFrame([asdict(r) for r in records])
-
-    critical_nulls = df["code_no"].isna().sum() + df["item_name"].isna().sum()
-    if critical_nulls > 0:
-        raise SchemaError("Null critical values detected after PMS extraction.")
-
-    return vessel_name, df
-
-
-# =========================
-# WORD / DOC PARSER
-# =========================
-
-def extract_doc_text(file_bytes: bytes, file_name: str) -> str:
-    lower = file_name.lower()
-
-    if lower.endswith(".docx"):
-        if not HAS_DOCX:
-            raise ParserError("python-docx is required to parse .docx files.")
-        doc = Document(io.BytesIO(file_bytes))
-        parts = [p.text for p in doc.paragraphs if normalize_text(p.text)]
-        for tbl in doc.tables:
-            for row in tbl.rows:
-                cell_texts = [normalize_text(c.text) for c in row.cells]
-                if any(cell_texts):
-                    parts.append(" | ".join(cell_texts))
-        return "\n".join(parts)
-
-    if lower.endswith(".doc"):
-        # Many .doc uploads in these workflows are actually text-extracted artifacts.
-        try:
-            txt = file_bytes.decode("utf-8", errors="ignore")
-            if len(normalize_text(txt)) > 50:
-                return txt
-        except Exception:
-            pass
-        try:
-            txt = file_bytes.decode("latin-1", errors="ignore")
-            if len(normalize_text(txt)) > 50:
-                return txt
-        except Exception:
-            pass
-        raise ParserError("Binary .doc parsing is not supported in this core. Convert to .docx or text first.")
-
-    try:
-        return file_bytes.decode("utf-8", errors="ignore")
-    except Exception:
-        return file_bytes.decode("latin-1", errors="ignore")
-
-
-def split_word_sections(text: str) -> List[str]:
-    t = normalize_text(text)
-    t = t.replace("TITLE Vessels Name", "\nTITLE Vessels Name")
-    t = t.replace("TABLE Note 1", "\nTABLE Note 1")
-    t = t.replace("AUXILIARY BOILER", "\nAUXILIARY BOILER")
-    t = t.replace("TURBOCHARGER", "\nTURBOCHARGER")
-    t = t.replace("DESCRIPTIONPERIODICITYDG No1DG No2DG No3", "\nDESCRIPTIONPERIODICITYDG No1DG No2DG No3")
-    chunks = [c.strip() for c in re.split(r"\n+", t) if normalize_text(c)]
-    return chunks
-
-
-def parse_word_running_hours(file_bytes: bytes, file_name: str) -> Tuple[str, pd.DataFrame]:
-    text = extract_doc_text(file_bytes, file_name)
-    if "Running Hours Monthly Report" not in text and "RUNNING HOURS SINCE LAST OH" not in text:
-        raise SchemaError("Input document does not look like the running-hours monthly report.")
-
-    vessel_match = re.search(r"Vessels Name\s+(MV\s+[A-Z0-9 .\-]+)", text, flags=re.I)
-    if not vessel_match:
-        vessel_match = re.search(r"(MV\s+MINOAN\s+FALCON)", text, flags=re.I)
-    if not vessel_match:
-        raise SchemaError("Could not find vessel name in Word report.")
-    vessel_name = normalize_text(vessel_match.group(1))
-
-    me_total = None
-    me_month = None
-    m_total = re.search(r"MAIN ENGINE Type\s+Total Running Hours\s+([\d,]+)\s*Hours\s+This Month\s+([\d,]+)\s*HRS", text, flags=re.I)
-    if m_total:
-        me_total = to_float(m_total.group(1))
-        me_month = to_float(m_total.group(2))
-
-    records: List[RunningHoursWordRecord] = []
-
-    # Main engine cylinder lines
-    if "CYL. No.1" in text and "CYL. No.2" in text:
-        for desc in [
-            "CYLINDER COVER", "PISTON ASSEMBLY", "STUFFING BOX", "PISTON CROWN",
-            "CYLINDER LINER", "EXAUST VALVE", "STARTING VALVE", "SAFETY VALVE",
-            "FUEL VALVES", "FUEL PUMP", "PLUNGER AND BARREL RENEWAL",
-            "FUEL PUMP SUCTION VALVE", "FUEL PUMP PUNCTURE VALVE",
-            "CROSSHEAD BEARINGS", "BOTTOM END BEARINGS", "MAIN BEARINGS"
-        ]:
-            pattern = re.compile(
-                rf"{re.escape(desc)}\s+(.+?)(?=(CYLINDER COVER|PISTON ASSEMBLY|STUFFING BOX|PISTON CROWN|CYLINDER LINER|EXAUST VALVE|STARTING VALVE|SAFETY VALVE|FUEL VALVES|FUEL PUMP|PLUNGER AND BARREL RENEWAL|FUEL PUMP SUCTION VALVE|FUEL PUMP PUNCTURE VALVE|CROSSHEAD BEARINGS|BOTTOM END BEARINGS|MAIN BEARINGS|Note 1))",
-                flags=re.I | re.S
-            )
-            m = pattern.search(text)
-            if not m:
-                continue
-
-            excerpt = normalize_text(m.group(1))
-            dates = re.findall(r"\b\d{1,2}[-/][A-Z]{3,9}[-/]\d{2,4}\b|\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b", excerpt, flags=re.I)
-            nums = re.findall(r"(?<![A-Z])\d[\d,]*", excerpt)
-
-            dt = to_timestamp(dates[0]) if dates else None
-            hrs = None
-            cleaned_nums = [to_float(x) for x in nums if to_float(x) is not None]
-            if cleaned_nums:
-                hrs = cleaned_nums[-1]
-
-            records.append(RunningHoursWordRecord(
-                vessel_name=vessel_name,
-                section="MAIN ENGINE",
-                cyl_or_unit=None,
-                description=desc,
-                periodicity_raw="",
-                date_of_last_oh=dt,
-                running_hours_since_last_oh=hrs,
-                total_running_hours=me_total,
-                this_month_hours=me_month,
-                raw_excerpt=excerpt[:500]
-            ))
-
-    # DG block
-    dg_months = re.search(
-        r"Total Hours\s*([0-9,]+).*?Hours This Month\s*([0-9,]+).*?Hours This Month.*?DESCRIPTIONPERIODICITYDG No1DG No2DG No3(.*?)(TABLE 1st Copy|TITLE Vessels Name)",
-        text,
-        flags=re.I | re.S
-    )
-    if dg_months:
-        dg_total = to_float(dg_months.group(1))
-        dg_this_month = to_float(dg_months.group(2))
-        dg_body = dg_months.group(3)
-
-        line_candidates = [
-            "Cylinder Head", "Piston", "Connecting Rod", "Cylinder Liners", "Fuel Valves",
-            "Fuel Pumps", "Crank Pin Bearing", "Main Bearing", "Adjust Valve Head Clearance",
-            "Turbocharger", "Air Cooler", "L.O. Cooler Clean", "Cooling Water Pump",
-            "F.W. Cooler Clean", "Cool Water Thermostat Valve", "L.O. Renewal",
-            "Alternator Cleaning", "L.O. Thermostat Valve", "Thrust Bearing"
-        ]
-
-        for item in line_candidates:
-            pat = re.compile(rf"{re.escape(item)}\s+(.*?)(?=(?:{'|'.join(map(re.escape, line_candidates))}|TABLE 1st Copy|$))", flags=re.I | re.S)
-            m = pat.search(dg_body)
-            if not m:
-                continue
-            excerpt = normalize_text(m.group(1))
-            dates = re.findall(r"\b\d{1,2}[A-Z]{3}\d{2}\b|\b\d{1,2}[A-Z]{3}\d{4}\b|\b\d{1,2}-[A-Z]{3}-\d{2,4}\b|\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b", excerpt, flags=re.I)
-            nums = [to_float(x) for x in re.findall(r"\d[\d,]*", excerpt) if to_float(x) is not None]
-            hrs = nums[-1] if nums else None
-            dt = to_timestamp(dates[0]) if dates else None
-
-            records.append(RunningHoursWordRecord(
-                vessel_name=vessel_name,
-                section="DIESEL GENERATOR",
-                cyl_or_unit=None,
-                description=item.upper(),
-                periodicity_raw="",
-                date_of_last_oh=dt,
-                running_hours_since_last_oh=hrs,
-                total_running_hours=dg_total,
-                this_month_hours=dg_this_month,
-                raw_excerpt=excerpt[:500]
-            ))
-
-    df = pd.DataFrame([asdict(r) for r in records])
-    if df.empty:
-        raise SchemaError("No running-hours records extracted from Word report.")
-
-    return vessel_name, df
-
-# =========================
-# Matching + Reconciliation
-# =========================
-
-def infer_word_target_from_pms(code_no: str, item_name: str, equipment_group: str) -> Tuple[str, Optional[str]]:
-    code = normalize_text(code_no).upper()
-    item = normalize_item_name(item_name)
-    grp = normalize_text(equipment_group).upper()
-
-    if code.startswith("ME-"):
-        if re.match(r"^ME-\d{2}-", code):
-            cyl = re.search(r"ME-(\d{2})-", code)
-            unit = f"CYL. NO.{int(cyl.group(1))}" if cyl else None
-            return "MAIN ENGINE", unit
-
-    if code.startswith("DG-"):
-        dg = re.search(r"DG-(\d{2})-", code)
-        unit = f"DG NO{int(dg.group(1))}" if dg else None
-        return "DIESEL GENERATOR", unit
-
-    if "TURBOCHARGER" in grp or "TURBOCHARGER" in item:
-        return "TURBOCHARGER", None
-
-    if "AIR COMPRESSOR" in grp or "COMPRESSOR" in grp:
-        return "MAIN AIR COMPRESSORS", None
-
-    return "", None
-
-
-def compute_match_score(pms_row: pd.Series, word_row: pd.Series) -> float:
-    score = 0.0
-
-    p_item = normalize_item_name(pms_row["item_name"])
-    w_item = normalize_item_name(word_row["description"])
-
-    p_section, p_unit = infer_word_target_from_pms(
-        pms_row["code_no"],
-        pms_row["item_name"],
-        pms_row.get("equipment_group", "")
-    )
-    w_section = normalize_text(word_row["section"]).upper()
-
-    if p_section and p_section == w_section:
-        score += 40.0
-
-    if p_item == w_item:
-        score += 40.0
-    elif p_item in w_item or w_item in p_item:
-        score += 25.0
-
-    p_dt = pms_row.get("date_last_inspection")
-    w_dt = word_row.get("date_of_last_oh")
-    if pd.notna(p_dt) and pd.notna(w_dt):
-        day_gap = abs((pd.Timestamp(p_dt).normalize() - pd.Timestamp(w_dt).normalize()).days)
-        if day_gap == 0:
-            score += 15.0
-        elif day_gap <= 3:
-            score += 10.0
-        elif day_gap <= 10:
-            score += 5.0
-
-    p_hrs = pms_row.get("current_operating_hours")
-    w_hrs = word_row.get("running_hours_since_last_oh")
-    if pd.notna(p_hrs) and pd.notna(w_hrs):
-        diff = abs(float(p_hrs) - float(w_hrs))
-        if diff == 0:
-            score += 15.0
-        elif diff <= 5:
-            score += 10.0
-        elif diff <= 25:
-            score += 5.0
-
-    return min(score, 100.0)
-
-
-def best_word_match_for_pms(pms_row: pd.Series, word_df: pd.DataFrame) -> Tuple[Optional[pd.Series], float]:
-    candidates = word_df.copy()
-
-    target_section, _ = infer_word_target_from_pms(
-        pms_row["code_no"],
-        pms_row["item_name"],
-        pms_row.get("equipment_group", "")
-    )
-
-    if target_section:
-        sec = candidates["section"].fillna("").str.upper() == target_section
-        if sec.any():
-            candidates = candidates[sec].copy()
-
-    if candidates.empty:
-        return None, 0.0
-
-    scored = []
-    for idx, row in candidates.iterrows():
-        scored.append((idx, compute_match_score(pms_row, row)))
-
-    scored.sort(key=lambda x: x[1], reverse=True)
-    best_idx, best_score = scored[0]
-    if best_score < 45.0:
-        return None, best_score
-
-    return candidates.loc[best_idx], best_score
-
-
-def reconcile_status(
-    pms_current_hours: Optional[float],
-    word_running_hours: Optional[float],
-    pms_mar: Optional[float],
-    word_month: Optional[float],
-    match_score: float,
-) -> Tuple[str, str]:
-    notes = []
-
-    if match_score < 45:
-        return "UNMATCHED", "No sufficiently strong deterministic match in Word report."
-
-    status = "MATCHED"
-
-    if pms_current_hours is not None and word_running_hours is not None:
-        diff = abs(float(pms_current_hours) - float(word_running_hours))
-        notes.append(f"Current-vs-word OH diff={diff:.1f}")
-        if diff > 25:
-            status = "REVIEW"
-
-    if pms_mar is not None and word_month is not None:
-        mdiff = abs(float(pms_mar) - float(word_month))
-        notes.append(f"March-hours diff={mdiff:.1f}")
-        if mdiff > 25 and status == "MATCHED":
-            status = "REVIEW"
-
-    if not notes:
-        notes.append("Matched by section/item only.")
-
-    return status, "; ".join(notes)
-
-
-# =========================
-# Immutable ledger build
-# =========================
-
-def make_ledger_id(pms_source_hash: str, code_no: str, source_row_excel: int) -> str:
-    raw = f"{pms_source_hash}|{code_no}|{source_row_excel}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
-
-
-def build_immutable_ledger(
-    pms_df: pd.DataFrame,
-    word_df: Optional[pd.DataFrame],
-    pms_fingerprint: SourceFingerprint,
-    word_fingerprint: Optional[SourceFingerprint],
-) -> pd.DataFrame:
-    ledger_rows: List[LedgerRecord] = []
-
-    for _, pms_row in pms_df.iterrows():
-        matched_word = None
-        score = 0.0
-
-        if word_df is not None and not word_df.empty:
-            matched_word, score = best_word_match_for_pms(pms_row, word_df)
-
-        if matched_word is not None:
-            status, notes = reconcile_status(
-                pms_current_hours=pms_row.get("current_operating_hours"),
-                word_running_hours=matched_word.get("running_hours_since_last_oh"),
-                pms_mar=pms_row.get("mar"),
-                word_month=matched_word.get("this_month_hours"),
-                match_score=score,
-            )
-        else:
-            status, notes = ("UNMATCHED", "No Word counterpart found or score below threshold.")
-
-        row = LedgerRecord(
-            ledger_id=make_ledger_id(pms_fingerprint.sha256, pms_row["code_no"], int(pms_row["source_row_excel"])),
-            vessel_name=pms_row["vessel_name"],
-            code_no=pms_row["code_no"],
-            pms_item_name=pms_row["item_name"],
-            pms_section=pms_row.get("section_name", ""),
-            pms_group=pms_row.get("equipment_group", ""),
-            pms_date_last_inspection=pms_row.get("date_last_inspection"),
-            pms_current_operating_hours=pms_row.get("current_operating_hours"),
-            pms_estimated_next_inspection=pms_row.get("estimated_next_inspection"),
-            pms_mar_hours=pms_row.get("mar"),
-            word_section=matched_word.get("section") if matched_word is not None else None,
-            word_unit=matched_word.get("cyl_or_unit") if matched_word is not None else None,
-            word_description=matched_word.get("description") if matched_word is not None else None,
-            word_date_last_oh=matched_word.get("date_of_last_oh") if matched_word is not None else None,
-            word_running_hours_since_last_oh=matched_word.get("running_hours_since_last_oh") if matched_word is not None else None,
-            word_total_running_hours=matched_word.get("total_running_hours") if matched_word is not None else None,
-            word_this_month_hours=matched_word.get("this_month_hours") if matched_word is not None else None,
-            match_score=round(score, 2),
-            reconciliation_status=status,
-            reconciliation_notes=notes,
-            pms_source_hash=pms_fingerprint.sha256,
-            word_source_hash=word_fingerprint.sha256 if word_fingerprint else None,
-            created_at_utc=datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-        )
-        ledger_rows.append(row)
-
-    ledger_df = pd.DataFrame([asdict(x) for x in ledger_rows])
-
-    if ledger_df["ledger_id"].duplicated().any():
-        raise ReconciliationError("Ledger ID collision detected. Immutable key generation failed.")
-
-    return ledger_df
-
-
-# =========================
-# Validation
-# =========================
-
-def validate_pms_vs_daily_hours(pms_df: pd.DataFrame, daily_summary: Dict[str, float]) -> pd.DataFrame:
-    out = []
-
-    checks = [
-        ("ME", "mar", "ME_M03"),
-        ("DG1", "mar", "DG1_M03"),
-        ("DG2", "mar", "DG2_M03"),
-        ("DG3", "mar", "DG3_M03"),
-        ("DG4", "mar", "DG4_M03"),
+    if header_idx == -1:
+        raise ValueError("Global Header Check Failed: Ensure 'DATE' and 'PORT' exist in the top rows of the file.")
+
+    clean_data_chunk = df_raw.iloc[idx:].copy().reset_index(drop=True)
+
+    df = pd.DataFrame()
+    for std_name, exc_idx in cols_found.items():
+        df[std_name] = clean_data_chunk.iloc[:, exc_idx]
+
+    return df
+
+def semantic_parse(file_bytes, file_name):
+    vn_raw = re.sub(r"\.[^.]+$", "", file_name).strip()
+    vname = re.sub(r"[_\-]+", " ", vn_raw).upper()
+
+    if file_name.lower().endswith(".xlsx"):
+        df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine="openpyxl", dtype=str)
+    else:
+        df_raw = pd.read_csv(io.StringIO(file_bytes.decode("latin-1", errors="replace")), header=None, on_bad_lines="skip", dtype=str)
+
+    if df_raw.empty or len(df_raw) < 4:
+        raise ValueError("File is empty or severely malformed.")
+
+    is_multi_version = False
+    split_row = 0
+    for vessel, row in MULTI_VERSION_MAP.items():
+        if vessel in vname:
+            is_multi_version = True
+            split_row = row
+            break
+
+    if is_multi_version:
+        df = _parse_manifest(df_raw, split_row)
+    else:
+        df = _parse_standard(df_raw)
+
+    missing = [col for col in REQUIRED_RAW_COLS if col not in df.columns]
+    for req in missing:
+        df[req] = np.nan
+
+    math_cols = [
+        "FO_A", "FO_L", "MGO_A", "MGO_L", "Bunk_FO", "Bunk_MGO", "Bunk_MELO", "Bunk_HSCYLO",
+        "Bunk_LSCYLO", "Bunk_GELO", "Bunk_CYLO", "MELO_R", "HSCYLO_R", "LSCYLO_R", "GELO_R",
+        "CYLO_R", "Speed", "DistLeg", "TotalDist", "CargoQty"
     ]
+    for col in math_cols:
+        df[col] = df[col].apply(_sn)
 
-    for machine, month_col, key in checks:
-        expected = daily_summary.get(key)
-        if expected is None:
-            continue
+    string_cols = ["Voy", "Port", "AD", "Date", "Time"]
+    for col in string_cols:
+        df[col] = df[col].fillna("").astype(str).str.strip()
 
-        if machine == "ME":
-            sample = pms_df[pms_df["code_no"].str.startswith("ME-") & pms_df["mar"].notna()]
-        else:
-            dg_prefix = machine.replace("DG", "DG-0")
-            sample = pms_df[pms_df["code_no"].str.startswith(dg_prefix) & pms_df["mar"].notna()]
+    df["Datetime"] = df.apply(lambda r: _parse_dt(r.get("Date"), r.get("Time")), axis=1)
+    df = df.dropna(subset=["Datetime"]).sort_values("Datetime").reset_index(drop=True)
+    df["AD"] = df["AD"].apply(lambda v: "D" if v.upper() in ["D", "DEP", "SBE", "FAOP"] else ("A" if v.upper().startswith("A") else v))
+    return df, vname
 
-        if sample.empty:
-            out.append({
-                "machine": machine,
-                "month_col": month_col,
-                "expected_from_daily": expected,
-                "observed_sample": None,
-                "status": "NO_SAMPLE"
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRI-STATE AD-TO-AD STATE MACHINE (KINEMATIC IMPUTATION PROTOCOL)
+# ═══════════════════════════════════════════════════════════════════════════════
+def build_state_machine(df, min_speed, ghost_sea, ghost_port):
+    ad_events = df[df["AD"].isin(["A", "D"])].copy()
+    if len(ad_events) < 2:
+        raise ValueError("Insufficient A/D events to construct a timeline.")
+
+    ad_events["Prev_AD"] = ad_events["AD"].shift(1)
+    ad_events = ad_events[ad_events["AD"] != ad_events["Prev_AD"]].drop(columns=["Prev_AD"]).copy()
+
+    trips, cum_drift = [], []
+    for i in range(len(ad_events) - 1):
+        r1, r2 = ad_events.iloc[i], ad_events.iloc[i + 1]
+        idx1, idx2 = r1.name, r2.name
+        status, flags = "VERIFIED", []
+        phys_burn, log_burn, drift, daily_burn, days = np.nan, np.nan, np.nan, np.nan, 0.0
+
+        phase = "SEA" if r1["AD"] == "D" else "PORT"
+        days = (r2["Datetime"] - r1["Datetime"]).total_seconds() / 86400.0
+        if days <= 0:
+            days, flags = 0.02, flags + ["Time Delta Fallback"]
+
+        start_rob, end_rob = r1.get("FO_A"), r2.get("FO_A")
+        if pd.isna(start_rob) or pd.isna(end_rob):
+            status, flags = "QUARANTINE_ROB", flags + ["Missing Sounding"]
+
+        if r1["AD"] == "D" and not pd.isna(start_rob):
+            fol = r1.get("FO_L")
+            cum_drift.append({
+                "dt": r1["Datetime"],
+                "gap": start_rob - (fol if not pd.isna(fol) else start_rob),
+                "port": r1.get("Port", "")[:20]
             })
-            continue
 
-        observed = float(sample.iloc[0][month_col])
-        out.append({
-            "machine": machine,
-            "month_col": month_col,
-            "expected_from_daily": expected,
-            "observed_sample": observed,
-            "status": "OK" if abs(expected - observed) <= 1e-9 else "REVIEW"
+        window = df.loc[idx1 + 1:idx2]
+        if phase == "PORT":
+            bfo = df.loc[idx1:idx2, "Bunk_FO"].sum(skipna=True)
+            b_melo = df.loc[idx1:idx2, "Bunk_MELO"].sum(skipna=True)
+            b_hscylo = df.loc[idx1:idx2, "Bunk_HSCYLO"].sum(skipna=True)
+            b_lscylo = df.loc[idx1:idx2, "Bunk_LSCYLO"].sum(skipna=True)
+            b_cylo = df.loc[idx1:idx2, "Bunk_CYLO"].sum(skipna=True)
+            b_gelo = df.loc[idx1:idx2, "Bunk_GELO"].sum(skipna=True)
+        else:
+            bfo = window["Bunk_FO"].sum(skipna=True)
+            b_melo = window["Bunk_MELO"].sum(skipna=True)
+            b_hscylo = window["Bunk_HSCYLO"].sum(skipna=True)
+            b_lscylo = window["Bunk_LSCYLO"].sum(skipna=True)
+            b_cylo = window["Bunk_CYLO"].sum(skipna=True)
+            b_gelo = window["Bunk_GELO"].sum(skipna=True)
+
+        speed = window["Speed"].replace(0, np.nan).mean() if not window["Speed"].empty else np.nan
+        dist = window["DistLeg"].sum(skipna=True)
+
+        if dist <= 0 and phase == "SEA":
+            dist = max(0, _sn0(r2.get("TotalDist")) - _sn0(r1.get("TotalDist")))
+            if dist <= 0 and not pd.isna(speed):
+                dist = speed * (days * 24.0)
+                flags.append("Distance Imputed from Kinematics")
+
+        if pd.isna(speed):
+            speed = dist / (days * 24.0) if days > 0 else 0.0
+
+        melo_c = max(0, (_sn0(r1.get("MELO_R")) - _sn0(r2.get("MELO_R"))) + b_melo)
+        hscylo_c = max(0, (_sn0(r1.get("HSCYLO_R")) - _sn0(r2.get("HSCYLO_R"))) + b_hscylo)
+        lscylo_c = max(0, (_sn0(r1.get("LSCYLO_R")) - _sn0(r2.get("LSCYLO_R"))) + b_lscylo)
+        cylo_gen_c = max(0, (_sn0(r1.get("CYLO_R")) - _sn0(r2.get("CYLO_R"))) + b_cylo)
+        gelo_c = max(0, (_sn0(r1.get("GELO_R")) - _sn0(r2.get("GELO_R"))) + b_gelo)
+
+        dqi = 0
+        if status == "VERIFIED" or "QUARANTINE" not in status:
+            phys_burn = (start_rob - end_rob) + bfo
+            log_start = r1.get("FO_L") if not pd.isna(r1.get("FO_L")) else start_rob
+            log_end = r2.get("FO_L") if not pd.isna(r2.get("FO_L")) else end_rob
+            log_burn = (log_start - log_end) + bfo
+            drift = phys_burn - log_burn
+            daily_burn = phys_burn / days
+
+            if bfo < 0:
+                status, flags = "QUARANTINE", flags + ["Negative Bunker Input"]
+            if abs(drift) > 20 and abs(abs(drift) - abs(bfo)) < 5.0:
+                status, flags = "QUARANTINE", flags + ["Mass Imbalance"]
+            if daily_burn > 250:
+                status, flags = "QUARANTINE", flags + ["MCR Limit Exceeded"]
+            if phase == "PORT" and phys_burn < ghost_port and "QUARANTINE" not in status:
+                status, flags = "GHOST BUNKER", flags + ["Missing Receipt"]
+            elif phase == "SEA" and phys_burn < ghost_sea and "QUARANTINE" not in status:
+                status, flags = "GHOST BUNKER", flags + ["Negative Burn"]
+
+            dqi = compute_dqi(r1, r2, days, phys_burn, drift, ghost_tol=(ghost_port if phase == "PORT" else ghost_sea))
+
+        trips.append({
+            "Indicator": ICONS.get(status, ICONS["VERIFIED"]) if "QUARANTINE" not in status else "⛔",
+            "Timeline": f"{r1['Datetime'].strftime('%d %b %y')} → {r2['Datetime'].strftime('%d %b %y')}",
+            "Date_Start_TS": r1["Datetime"],
+            "Phase": phase,
+            "Condition": "LADEN" if _sn0(r1.get("CargoQty", 0)) > 100 else "BALLAST",
+            "Voy": r1.get("Voy", ""),
+            "Route": f"{r1.get('Port','')[:15]} → {r2.get('Port','')[:15]}" if phase == "SEA" else f"Port Idle: {r1.get('Port','')[:15]}",
+            "Days": round(days, 2),
+            "Dist_NM": round(dist, 0),
+            "Speed_kn": round(speed, 1),
+            "CargoQty": _sn0(r1.get("CargoQty", 0)),
+            "FO_A_Start": start_rob if status == "VERIFIED" else np.nan,
+            "Bunk_FO": bfo,
+            "FO_A_End": end_rob if status == "VERIFIED" else np.nan,
+            "Phys_Burn": round(phys_burn, 1),
+            "Log_Burn": round(log_burn, 1),
+            "Drift_MT": round(drift, 1),
+            "Daily_Burn": round(daily_burn, 1) if status == "VERIFIED" else np.nan,
+            "MELO_L": round(melo_c, 0),
+            "HSCYLO_L": round(hscylo_c, 0),
+            "LSCYLO_L": round(lscylo_c, 0),
+            "CYLO_GEN_L": round(cylo_gen_c, 0),
+            "GELO_L": round(gelo_c, 0),
+            "Total_CYLO": round(hscylo_c + lscylo_c + cylo_gen_c, 0),
+            "DQI": int(dqi),
+            "Status": status,
+            "Flags": ", ".join(flags) if flags else ""
         })
 
-    return pd.DataFrame(out)
+    trip_df = pd.DataFrame(trips)
+    if len(trip_df) >= 4:
+        for cond in ["LADEN", "BALLAST"]:
+            ver = trip_df[
+                (trip_df["Status"] == "VERIFIED") &
+                (trip_df["Phase"] == "SEA") &
+                (trip_df["Phys_Burn"] > 0) &
+                (trip_df["Condition"] == cond)
+            ]
+            if len(ver) >= 4:
+                q1, q3 = ver["Daily_Burn"].quantile(0.25), ver["Daily_Burn"].quantile(0.75)
+                iqr = q3 - q1
+                if iqr > 0:
+                    lo, hi = q1 - 2.0 * iqr, q3 + 2.0 * iqr
+                    mask = (
+                        (trip_df["Status"] == "VERIFIED") &
+                        (trip_df["Phase"] == "SEA") &
+                        (trip_df["Condition"] == cond) &
+                        ((trip_df["Daily_Burn"] < lo) | (trip_df["Daily_Burn"] > hi))
+                    )
+                    trip_df.loc[mask, "Status"] = "STAT OUTLIER"
+                    trip_df.loc[mask, "Indicator"] = ICONS["STAT OUTLIER"]
 
+    return trip_df, cum_drift
 
-def strict_quality_gate(
-    pms_df: pd.DataFrame,
-    ledger_df: pd.DataFrame,
-    validation_df: pd.DataFrame
-) -> None:
-    if pms_df.empty:
-        raise SchemaError("PMS extraction produced zero rows.")
+# ═══════════════════════════════════════════════════════════════════════════════
+# FULL DATA-DRIVEN PIML — Ledoit-Wolf + K-Fold Conformal
+# ═══════════════════════════════════════════════════════════════════════════════
+def execute_ai_physics(trip_df, min_speed):
+    ai_status_msg = "Enterprise AI Optimized."
+    if not HAS_ML:
+        return trip_df, "AI Offline: Missing sklearn/xgboost."
+    if trip_df.empty:
+        return trip_df, "AI Offline: Empty ledger."
 
-    if ledger_df.empty:
-        raise ReconciliationError("Ledger build produced zero rows.")
+    cols_to_add = [
+        "AI_Exp", "HM_Base", "Stoch_Var", "SHAP_Base", "SHAP_Propulsion", "SHAP_Mass",
+        "SHAP_Kinematics", "SHAP_Season", "SHAP_Degradation", "Exp_Lower", "Exp_Upper",
+        "Mahalanobis", "MD_Threshold", "P_Value"
+    ]
+    for col in cols_to_add:
+        if col not in trip_df.columns:
+            trip_df[col] = np.nan
 
-    if pms_df["code_no"].isna().any():
-        raise SchemaError("Null code_no values present in PMS output.")
+    try:
+        sea_mask = (
+            (trip_df["Phase"] == "SEA") &
+            (trip_df["Status"] == "VERIFIED") &
+            (trip_df["Speed_kn"] >= min_speed)
+        )
+        if sea_mask.sum() < 8:
+            raise ValueError(f"Insufficient valid Sea Legs ({sea_mask.sum()}). Min 8 req.")
 
-    bad_codes = pms_df[~pms_df["code_no"].astype(str).apply(is_code_like)]
-    if not bad_codes.empty:
-        raise SchemaError(f"Invalid code_no values leaked into PMS output: {bad_codes['code_no'].head(10).tolist()}")
+        ml = trip_df.loc[sea_mask].copy()
+        ml["True_Mass"] = (ml["CargoQty"].fillna(0) + ml["FO_A_Start"].fillna(0)).clip(lower=0.1)
+        ml["SOG"] = ml["Dist_NM"] / np.maximum(ml["Days"] * 24, 0.1)
+        ml["Kin_Delta"] = (ml["Speed_kn"] - ml["SOG"]).clip(-3.0, 3.0)
+        ml["Accel_Penalty"] = ml["Speed_kn"].diff().fillna(0.0).clip(-2.0, 2.0)
+        ml["Speed_Cubed"] = ml["Speed_kn"] ** 3
+        ml["Season_Sin"] = np.sin(2 * np.pi * ml["Date_Start_TS"].dt.month.fillna(6) / 12.0)
+        ml["Season_Cos"] = np.cos(2 * np.pi * ml["Date_Start_TS"].dt.month.fillna(6) / 12.0)
+        epoch = trip_df["Date_Start_TS"].min()
+        ml["Days_Since_Epoch"] = (ml["Date_Start_TS"] - epoch).dt.total_seconds() / 86400.0
 
-    if not validation_df.empty and (validation_df["status"] == "REVIEW").any():
-        rows = validation_df[validation_df["status"] == "REVIEW"].to_dict(orient="records")
-        raise ReconciliationError(f"Daily-hours reconciliation failed: {rows}")
+        features = ["Speed_kn", "Speed_Cubed", "True_Mass", "Kin_Delta", "Accel_Penalty", "Season_Sin", "Season_Cos", "Days_Since_Epoch"]
+        maha_features = ["Speed_kn", "True_Mass", "Accel_Penalty", "Season_Sin", "Season_Cos", "Days_Since_Epoch"]
+        ml[features] = ml[features].fillna(0.0)
 
+        k_array = ml["Daily_Burn"] / ((ml["True_Mass"] ** (2 / 3)) * ml["Speed_Cubed"] + 1e-6)
+        best_k = np.median(k_array[k_array <= np.percentile(k_array, 25)])
+        ml["HM_Base"] = best_k * (ml["True_Mass"] ** (2 / 3)) * ml["Speed_Cubed"]
+        trip_df.loc[sea_mask, "HM_Base"] = ml["HM_Base"]
 
-# =========================
-# Top-level bundle
-# =========================
+        y_delta = ml["Daily_Burn"] - ml["HM_Base"]
+        X_train, weights = ml[features], ml["Days"].clip(0.1, 30.0)
+        if y_delta.var() < 0.05:
+            raise ValueError("Target variance too low.")
 
-def build_bundle(
-    pms_excel_bytes: bytes,
-    pms_excel_name: str,
-    running_word_bytes: Optional[bytes] = None,
-    running_word_name: Optional[str] = None,
-) -> Dict[str, pd.DataFrame]:
-    pms_fp = file_fingerprint(pms_excel_name, pms_excel_bytes)
+        kf = KFold(n_splits=min(5, len(X_train)), shuffle=True, random_state=42)
+        oof_preds = np.zeros(len(X_train))
+        for train_idx, val_idx in kf.split(X_train):
+            m = XGBRegressor(n_estimators=100, max_depth=3, learning_rate=0.06, random_state=42)
+            m.fit(X_train.iloc[train_idx], y_delta.iloc[train_idx], sample_weight=weights.iloc[train_idx])
+            oof_preds[val_idx] = m.predict(X_train.iloc[val_idx])
 
-    vessel_daily, daily_df, daily_summary = parse_daily_operating_hours(pms_excel_bytes)
-    vessel_pms, pms_df = parse_pms_sheet(pms_excel_bytes)
+        oof_residuals = np.abs(y_delta - oof_preds)
+        model = XGBRegressor(n_estimators=100, max_depth=3, learning_rate=0.06, random_state=42)
+        model.fit(X_train, y_delta, sample_weight=weights)
+        preds = ml["HM_Base"] + model.predict(X_train)
 
-    if normalize_text(vessel_daily).upper() != normalize_text(vessel_pms).upper():
-        raise ReconciliationError(
-            f"Vessel mismatch between daily-hours and PMS sheets: '{vessel_daily}' vs '{vessel_pms}'."
+        var_model = XGBRegressor(n_estimators=40, max_depth=2, learning_rate=0.05, random_state=42)
+        var_model.fit(X_train, oof_residuals, sample_weight=weights)
+        var_preds_train = np.maximum(var_model.predict(X_train), 0.01)
+        conformal_scores = oof_residuals / var_preds_train
+
+        n = len(conformal_scores)
+        q90 = np.quantile(conformal_scores, min(1.0, np.ceil((n + 1) * 0.90) / n) if n > 0 else 0.90)
+        stoch_margin = np.maximum(var_model.predict(X_train) * q90, 0.5)
+
+        p_vals = [
+            (1.0 - (np.sum(conformal_scores <= (np.abs(ml.loc[idx, "Daily_Burn"] - preds.iloc[i]) / var_preds_train[i])) / len(conformal_scores))) * 100
+            for i, idx in enumerate(ml.index)
+        ]
+        trip_df.loc[sea_mask, "P_Value"] = p_vals
+
+        X_maha = ml[maha_features].values
+        lw = LedoitWolf().fit(X_maha)
+        md = np.sqrt(np.maximum(lw.mahalanobis(X_maha), 0))
+        trip_df.loc[sea_mask, "Mahalanobis"] = md
+        trip_df.loc[sea_mask, "MD_Threshold"] = np.percentile(md, 95)
+
+        explainer = shap.TreeExplainer(model)
+        sv = explainer.shap_values(X_train)
+        base_val = explainer.expected_value[0] if isinstance(explainer.expected_value, np.ndarray) else explainer.expected_value
+
+        trip_df.loc[sea_mask, "AI_Exp"] = preds.round(1)
+        trip_df.loc[sea_mask, "Stoch_Var"] = stoch_margin.round(1)
+        trip_df.loc[sea_mask, "SHAP_Base"] = base_val
+        trip_df.loc[sea_mask, "SHAP_Propulsion"] = sv[:, 0] + sv[:, 1]
+        trip_df.loc[sea_mask, "SHAP_Mass"] = sv[:, 2]
+        trip_df.loc[sea_mask, "SHAP_Kinematics"] = sv[:, 3] + sv[:, 4]
+        trip_df.loc[sea_mask, "SHAP_Season"] = sv[:, 5] + sv[:, 6]
+        trip_df.loc[sea_mask, "SHAP_Degradation"] = sv[:, 7]
+        trip_df.loc[sea_mask, "Exp_Lower"] = preds - stoch_margin
+        trip_df.loc[sea_mask, "Exp_Upper"] = preds + stoch_margin
+
+        outlier_mask = sea_mask & (
+            (trip_df["Daily_Burn"] < trip_df["Exp_Lower"]) |
+            (trip_df["Daily_Burn"] > trip_df["Exp_Upper"])
+        )
+        trip_df.loc[outlier_mask, "Status"] = "STAT OUTLIER"
+
+    except ValueError as e:
+        ai_status_msg = f"AI Offline: {str(e)}"
+    except Exception as e:
+        ai_status_msg = f"AI Exception: {str(e)}"
+        print(traceback.format_exc())
+
+    return trip_df, ai_status_msg
+    # ═══════════════════════════════════════════════════════════════════════════════
+# PIPELINE ORCHESTRATOR
+# ═══════════════════════════════════════════════════════════════════════════════
+@st.cache_data(show_spinner=False)
+def run_pipeline(file_bytes, filename, min_speed, ghost_sea, ghost_port):
+    try:
+        parsed_df, vname = semantic_parse(file_bytes, filename)
+        trip_df, cum_drift = build_state_machine(parsed_df, min_speed, ghost_sea, ghost_port)
+        trip_df, ai_msg = execute_ai_physics(trip_df, min_speed)
+
+        quarantined = len(trip_df[trip_df["Status"].str.contains("QUARANTINE")])
+        valid_sea = trip_df[(trip_df["Phase"] == "SEA") & (trip_df["Status"] == "VERIFIED")]
+        avg_sea = valid_sea["Phys_Burn"].sum() / valid_sea["Days"].sum() if valid_sea["Days"].sum() > 0 else 0.0
+
+        trip_df["Total_CYLO"] = (
+            trip_df.get("HSCYLO_L", pd.Series([0], dtype=float)) +
+            trip_df.get("LSCYLO_L", pd.Series([0], dtype=float)) +
+            trip_df.get("CYLO_GEN_L", pd.Series([0], dtype=float))
         )
 
-    word_df = None
-    word_fp = None
+        summary = {
+            "vname": vname,
+            "integrity": round((len(trip_df) - quarantined) / len(trip_df) * 100, 1) if not trip_df.empty else 0,
+            "avg_dqi": round(trip_df["DQI"].mean(), 0) if not trip_df.empty else 0,
+            "total_fuel": round(trip_df["Phys_Burn"].sum(skipna=True), 1),
+            "avg_sea_burn": round(avg_sea, 1),
+            "total_nm": round(trip_df["Dist_NM"].sum(), 0),
+            "total_days": round(trip_df["Days"].sum(), 1),
+            "total_melo": round(trip_df.get("MELO_L", pd.Series([0])).sum(), 0),
+            "total_cylo": round(trip_df["Total_CYLO"].sum(), 0),
+            "cycles": len(trip_df),
+            "quarantined": quarantined,
+            "anomalies": len(trip_df[trip_df["Status"].isin(["GHOST BUNKER", "STAT OUTLIER"])]),
+            "ai_msg": ai_msg
+        }
+        return trip_df, summary, cum_drift, None
+    except ValueError as e:
+        return pd.DataFrame(), None, None, f"Parsing Rejected: {str(e)}"
+    except Exception as e:
+        return pd.DataFrame(), None, None, f"System Crash: {str(e)}"
 
-    if running_word_bytes is not None and running_word_name is not None:
-        word_fp = file_fingerprint(running_word_name, running_word_bytes)
-        vessel_word, word_df = parse_word_running_hours(running_word_bytes, running_word_name)
+# ═══════════════════════════════════════════════════════════════════════════════
+# PLOTLY RENDER ENGINE
+# ═══════════════════════════════════════════════════════════════════════════════
+_BL = dict(
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
+    hovermode="x unified",
+    hoverlabel=dict(
+        bgcolor="rgba(6,12,18,0.97)",
+        bordercolor="rgba(0,224,176,0.55)",
+        font=dict(family="Geist Mono", color="#f8fafc", size=13)
+    ),
+    font=dict(family="Hanken Grotesk", color="#f8fafc"),
+    transition=dict(duration=800, easing="cubic-in-out")
+)
 
-        if normalize_text(vessel_word).upper() != normalize_text(vessel_pms).upper():
-            raise ReconciliationError(
-                f"Vessel mismatch between PMS and Word report: '{vessel_pms}' vs '{vessel_word}'."
-            )
+_M = dict(l=15, r=15, t=85, b=30)
+_AX = dict(
+    gridcolor="rgba(255,255,255,0.02)",
+    zerolinecolor="rgba(255,255,255,0.05)",
+    tickfont=dict(family="Geist Mono", size=11, color="#475569"),
+    showspikes=True,
+    spikecolor="rgba(0,224,176,0.6)",
+    spikethickness=1,
+    spikedash="solid"
+)
 
-    ledger_df = build_immutable_ledger(pms_df, word_df, pms_fp, word_fp)
-    validation_df = validate_pms_vs_daily_hours(pms_df, daily_summary)
+def chart_fuel(df):
+    sea = df[(df["Phase"] == "SEA") & (~df["Status"].str.contains("QUARANTINE"))]
+    port = df[(df["Phase"] == "PORT") & (~df["Status"].str.contains("QUARANTINE"))]
 
-    strict_quality_gate(pms_df, ledger_df, validation_df)
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.08)
 
-    audit_meta = pd.DataFrame([{
-        "vessel_name": vessel_pms,
-        "pms_file_name": pms_fp.file_name,
-        "pms_sha256": pms_fp.sha256,
-        "pms_byte_size": pms_fp.byte_size,
-        "word_file_name": word_fp.file_name if word_fp else None,
-        "word_sha256": word_fp.sha256 if word_fp else None,
-        "word_byte_size": word_fp.byte_size if word_fp else None,
-        "created_at_utc": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "daily_rows": len(daily_df),
-        "pms_rows": len(pms_df),
-        "word_rows": len(word_df) if word_df is not None else 0,
-        "ledger_rows": len(ledger_df),
-    }])
+    if not sea.empty:
+        fig.add_trace(
+            go.Bar(
+                x=sea["Timeline"], y=sea["Phys_Burn"], name="Sea Fuel",
+                marker_color="rgba(0,224,176,0.15)", marker_line_color="#00e0b0", marker_line_width=1.5
+            ),
+            row=1, col=1
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=sea["Timeline"], y=sea["Daily_Burn"], name="Sea MT/day", mode="lines+markers",
+                line=dict(color="#00e0b0", width=3, shape="spline"),
+                fill="tozeroy", fillcolor="rgba(0,224,176,0.05)",
+                marker=dict(size=8, color="#051014", line=dict(color="#00e0b0", width=2))
+            ),
+            row=1, col=1
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=sea["Timeline"], y=sea["Speed_kn"], name="Sea Speed", mode="lines+markers",
+                line=dict(color="#c9a84c", width=3, shape="spline"),
+                fill="tozeroy", fillcolor="rgba(201,168,76,0.05)",
+                marker=dict(size=8, color="#051014", line=dict(color="#c9a84c", width=2))
+            ),
+            row=2, col=1
+        )
 
-    return {
-        "daily_hours": daily_df,
-        "pms_items": pms_df,
-        "word_running_hours": word_df if word_df is not None else pd.DataFrame(),
-        "ledger": ledger_df,
-        "validation": validation_df,
-        "audit_meta": audit_meta,
-    }
+    if not port.empty:
+        fig.add_trace(
+            go.Bar(
+                x=port["Timeline"], y=port["Phys_Burn"], name="Port Fuel",
+                marker_color="rgba(255,42,85,0.15)", marker_line_color="#ff2a55", marker_line_width=1.5
+            ),
+            row=1, col=1
+        )
 
-
-# =========================
-# Export helper
-# =========================
-
-def write_bundle_to_excel(bundle: Dict[str, pd.DataFrame], output_path: str) -> None:
-    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        for sheet_name, df in bundle.items():
-            safe_sheet = sheet_name[:31]
-            if df is None:
-                pd.DataFrame().to_excel(writer, sheet_name=safe_sheet, index=False)
-            else:
-                df.to_excel(writer, sheet_name=safe_sheet, index=False)
-
-
-# =========================
-# Example usage
-# =========================
-
-if __name__ == "__main__":
-    PMS_FILE = "TEC-001-PMS-FALCON-Mar.-2026.xlsx"
-    WORD_FILE = "TEC-004-RUNNING-HOURS-MONTHLY-REPORT-Mar.-2026.doc"
-    OUT_FILE = "immutable_ledger_bundle.xlsx"
-
-    with open(PMS_FILE, "rb") as f:
-        pms_bytes = f.read()
-
-    with open(WORD_FILE, "rb") as f:
-        word_bytes = f.read()
-
-    bundle = build_bundle(
-        pms_excel_bytes=pms_bytes,
-        pms_excel_name=PMS_FILE,
-        running_word_bytes=word_bytes,
-        running_word_name=WORD_FILE,
+    fig.update_layout(
+        **_BL,
+        margin=_M,
+        title=dict(text="Tri-State Fuel Consumption & Kinematics", font=dict(size=24, family="Bricolage Grotesque", color="#fff")),
+        barmode="group",
+        showlegend=True,
+        height=700,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
+    fig.update_xaxes(tickangle=-45, automargin=True, **_AX)
+    fig.update_yaxes(**_AX)
+    return fig
 
-    write_bundle_to_excel(bundle, OUT_FILE)
-    print("OK:", OUT_FILE)
+def chart_lube(df):
+    fig = go.Figure()
+
+    if df.get("MELO_L", pd.Series([0])).sum() > 0:
+        fig.add_trace(
+            go.Bar(
+                x=df["Timeline"], y=df["MELO_L"], 
