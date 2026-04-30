@@ -5,7 +5,6 @@ import io
 import re
 import hashlib
 from datetime import datetime
-import base64
 import traceback
 import warnings
 from zipfile import ZipFile
@@ -16,26 +15,16 @@ import plotly.graph_objects as go
 warnings.filterwarnings("ignore")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 1. PREMIUM FRONTEND & SVG ENGINE (NO EMOJIS)
+# 1. PAGE CONFIGURATION & ENTERPRISE CSS (NO SVG BLOAT)
 # ═══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(page_title="PMS Auditor", layout="wide", initial_sidebar_state="collapsed")
-
-def _svg(svg_string):
-    return f"data:image/svg+xml;base64,{base64.b64encode(svg_string.encode()).decode()}"
-
-# High-Fidelity SVG Assets
-SVG_LOGO = _svg('<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#00e0b0"/><stop offset="100%" stop-color="#0284c7"/></linearGradient></defs><circle cx="24" cy="24" r="20" fill="none" stroke="url(#g1)" stroke-width="1.5" opacity="0.3"/><path d="M24 10 L24 38" stroke="url(#g1)" stroke-width="2.5" stroke-linecap="round"/><path d="M14 24 L34 24" stroke="url(#g1)" stroke-width="2.5" stroke-linecap="round"/><circle cx="24" cy="24" r="6" fill="#030712" stroke="url(#g1)" stroke-width="2"/></svg>')
-SVG_SHIELD = _svg('<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill="none" stroke="#00e0b0" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" fill="none" stroke="#00e0b0" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>')
-SVG_ALERT = _svg('<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01" fill="none" stroke="#ff2a55" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>')
-SVG_MATH = _svg('<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4 7h16M4 17h16M14 4l-4 16" fill="none" stroke="#c9a84c" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>')
-SVG_LEDGER = _svg('<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="4" width="18" height="16" rx="2" ry="2" fill="none" stroke="#64748b" stroke-width="1.5"/><line x1="3" y1="10" x2="21" y2="10" stroke="#64748b" stroke-width="1.5"/><line x1="8" y1="10" x2="8" y2="20" stroke="#64748b" stroke-width="1.5"/></svg>')
 
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap');
     
     :root {
-        --bg: #030712; --panel: rgba(17, 24, 39, 0.6); --border: rgba(255, 255, 255, 0.08); 
+        --bg: #030712; --panel: #0f172a; --border: rgba(255, 255, 255, 0.08); 
         --text: #f8fafc; --muted: #64748b; 
         --cyan: #00e0b0; --red: #ff2a55; --gold: #c9a84c; --blue: #0284c7;
     }
@@ -43,51 +32,42 @@ st.markdown("""
     .stApp { background-color: var(--bg); font-family: 'Inter', sans-serif; color: var(--text); }
     #MainMenu, footer, header {visibility: hidden;}
 
-    /* Animations */
-    @keyframes pulse-glow { 0% { box-shadow: 0 0 0 0 rgba(0, 224, 176, 0.2); } 70% { box-shadow: 0 0 20px 10px rgba(0, 224, 176, 0); } 100% { box-shadow: 0 0 0 0 rgba(0, 224, 176, 0); } }
-    @keyframes slide-up { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-
-    /* High-End Hero Section */
+    /* Premium Typography Hero */
     .hero {
-        display: flex; justify-content: space-between; align-items: center;
-        background: radial-gradient(circle at top right, rgba(0, 224, 176, 0.05), transparent 40%),
-                    linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
-        border: 1px solid var(--border); border-radius: 16px;
+        background: linear-gradient(180deg, rgba(15, 23, 42, 0.8), rgba(15, 23, 42, 0.4));
+        border: 1px solid var(--border); border-radius: 12px;
         padding: 32px 40px; margin-bottom: 30px;
-        backdrop-filter: blur(20px); box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-        animation: slide-up 0.6s ease-out forwards;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.5);
     }
-    .hero-title { font-size: 2.2rem; font-weight: 800; letter-spacing: -0.04em; background: linear-gradient(90deg, #fff, #94a3b8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-    .hero-sub { font-size: 0.8rem; color: var(--cyan); text-transform: uppercase; letter-spacing: 0.2em; font-weight: 600; margin-top: 4px; }
+    .hero-title { font-size: 2.2rem; font-weight: 800; letter-spacing: -0.04em; color: #fff; margin-bottom: 4px;}
+    .hero-sub { font-size: 0.8rem; color: var(--cyan); text-transform: uppercase; letter-spacing: 0.2em; font-weight: 600; }
     
-    /* HUD Grid */
-    .hud-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-bottom: 30px; animation: slide-up 0.8s ease-out forwards; }
+    /* Sleek HUD Metrics */
+    .hud-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-bottom: 30px; }
     .hud-card {
-        background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px;
-        backdrop-filter: blur(10px); transition: all 0.3s ease;
+        background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px;
+        transition: transform 0.2s ease, border-color 0.2s ease;
     }
-    .hud-card:hover { transform: translateY(-3px); border-color: rgba(255,255,255,0.15); box-shadow: 0 10px 20px rgba(0,0,0,0.3); }
-    .hud-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-    .hud-title { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; }
-    .hud-icon { width: 24px; height: 24px; }
+    .hud-card:hover { transform: translateY(-2px); border-color: rgba(255,255,255,0.2); }
+    .hud-title { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; margin-bottom: 12px;}
     .hud-val { font-family: 'JetBrains Mono', monospace; font-size: 2.2rem; font-weight: 700; color: #fff; line-height: 1; }
     
-    /* Custom Tabs */
-    .stTabs [data-baseweb="tab-list"] { gap: 40px; border-bottom: 1px solid var(--border); }
-    .stTabs [data-baseweb="tab"] { height: 60px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.85rem; background: transparent; transition: color 0.3s; }
+    /* Clean Tabs */
+    .stTabs [data-baseweb="tab-list"] { gap: 30px; border-bottom: 1px solid var(--border); }
+    .stTabs [data-baseweb="tab"] { height: 50px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.85rem; background: transparent; }
     .stTabs [aria-selected="true"] { color: var(--cyan); border-bottom: 2px solid var(--cyan); }
     
     /* Uploader Overrides */
-    .stFileUploader > div > div { background-color: rgba(17,24,39,0.4) !important; border: 1px dashed rgba(255,255,255,0.1) !important; border-radius: 12px !important; }
-    .stFileUploader > div > div:hover { border-color: var(--cyan) !important; background-color: rgba(0, 224, 176, 0.02) !important; }
+    .stFileUploader > div > div { background-color: var(--panel) !important; border: 1px dashed rgba(255,255,255,0.15) !important; border-radius: 8px !important; }
 </style>
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2. THE UNBREAKABLE IMMUTABLE KERNEL (REVERTED TO PROVEN LOGIC)
+# 2. BULLETPROOF DATA EXTRACTION (REVERTED TO FLAWLESS LOGIC)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def normalize_text(s): return re.sub(r"\s+", " ", str(s).upper().strip().replace("\xa0", " "))
+def normalize_text(s): 
+    return re.sub(r"\s+", " ", str(s).upper().strip().replace("\xa0", " "))
 
 def extract_first_float(value):
     if pd.isna(value): return np.nan
@@ -150,15 +130,22 @@ def parse_master_pms_excel(file_bytes):
     return excel_records, engine_ytd_hours
 
 @st.cache_data(show_spinner=False)
-def parse_pms_binary_doc(file_bytes):
+def parse_pms_binary_doc(file_bytes, file_name=""):
+    fname = (file_name or "").lower()
+    
     def parse_docx_xml(bytes_):
+        texts = []
         try:
             with ZipFile(io.BytesIO(bytes_)) as z: root = ET.fromstring(z.read("word/document.xml"))
             ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-            return [" ".join([t.text for t in p.findall(".//w:t", ns) if t.text]).strip() for p in root.findall(".//w:p", ns) if p.text or len(p.findall(".//w:t", ns))>0]
-        except: return []
+            for para in root.findall(".//w:p", ns):
+                line = " ".join([t.text for t in para.findall(".//w:t", ns) if t.text]).strip()
+                if line: texts.append(line)
+        except: pass
+        return texts
 
-    cells = parse_docx_xml(file_bytes)
+    # Vital Fallback: Supports both .docx (XML) and .doc (Binary Latin-1)
+    cells = parse_docx_xml(file_bytes) if fname.endswith(".docx") else [c.strip() for c in file_bytes.decode("latin-1", errors="ignore").replace("\x00", "").split("\x07") if c.strip()]
     extracted_data = []
 
     COMPONENTS = ['CYLINDER COVER', 'PISTON ASSY', 'PISTON ASSEMBLY', 'STUFFING BOX', 'PISTON CROWN', 'CYLINDER LINER', 'EXHAUST VALVE', 'STARTING VALVE', 'SAFETY VALVE', 'FUEL VALVE', 'FUEL PUMP', 'CROSSHEAD BEARING', 'BOTTOM END BEARING', 'MAIN BEARING', 'CYLINDER HEAD', 'CONNECTING ROD', 'TURBOCHARGER', 'AIR COOLER']
@@ -187,7 +174,10 @@ def parse_pms_binary_doc(file_bytes):
                     if pd.notna(d) and pd.notna(h):
                         extracted_data.append({'System': system, 'Unit': su, 'BaseComponent': cell, 'Component': f"[{system}] {cell} ({su})", 'Last_Overhaul': d, 'Claimed_Hours': float(h)})
         i += 1
-    return pd.DataFrame(extracted_data).dropna(subset=['Last_Overhaul']).reset_index(drop=True)
+        
+    df = pd.DataFrame(extracted_data)
+    if df.empty: return df
+    return df.dropna(subset=['Last_Overhaul']).reset_index(drop=True)
 
 def get_verified_hours(doc_row, excel_records):
     doc_sys, doc_unit = doc_row['System'], doc_row['Unit']
@@ -202,14 +192,13 @@ def get_verified_hours(doc_row, excel_records):
     return best_hours if best_score > 0.55 else None
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 3. THE PURE MATH ORACLE (BURN RATE VS PHYSICS)
+# 3. KINEMATIC ORACLE (PURE MATH)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def execute_kinematic_math(doc_df, excel_records, engine_ytd_hours):
     now = pd.Timestamp.now()
     day_of_year = max(1, now.dayofyear)
     
-    # Calculate True Engine Pulse (Hours accumulated per day)
     engine_pulse = {
         "ME": engine_ytd_hours.get("ME", 0) / day_of_year,
         "DG": engine_ytd_hours.get("DG", 0) / day_of_year
@@ -223,12 +212,10 @@ def execute_kinematic_math(doc_df, excel_records, engine_ytd_hours):
         oh_date = row['Last_Overhaul']
         sys_type = "ME" if "ME" in str(row['System']).upper() else "DG"
         
-        # 1. Verification Logic
         verified = get_verified_hours(row, excel_records)
-        status = "ORPHANED DATA" if verified is None else ("VERIFIED" if int(verified) == int(claimed) else "LEDGER DESYNC")
+        status = "DATA ORPHAN" if verified is None else ("VERIFIED" if int(verified) == int(claimed) else "LEDGER DESYNC")
         drift = (verified - claimed) if verified is not None else 0
         
-        # 2. Pure Physics Logic
         days_alive = max(1, (now - oh_date).days)
         burn_rate = claimed / days_alive
         pulse_limit = engine_pulse.get(sys_type, 16.5)
@@ -236,17 +223,17 @@ def execute_kinematic_math(doc_df, excel_records, engine_ytd_hours):
         violation = "NONE"
         alert_level = 0
         
-        if status == "ORPHANED DATA":
+        if status == "DATA ORPHAN":
             violation = "Missing from Master Ledger"
             alert_level = 1
         elif drift < 0:
             violation = "Time Reversal (Negative Drift)"
             alert_level = 3
         elif burn_rate > 24.0:
-            violation = f"Physics Breach (Burn Rate: {burn_rate:.1f} > 24h/d)"
+            violation = f"Physics Breach (Burn: {burn_rate:.1f} > 24h/d)"
             alert_level = 3
-        elif burn_rate > (pulse_limit * 1.3): # 30% margin for logging delay
-            violation = f"Kinematic Breach (Burn Rate: {burn_rate:.1f} > Engine Pulse: {pulse_limit:.1f})"
+        elif burn_rate > (pulse_limit * 1.3):
+            violation = f"Kinematic Breach (Burn: {burn_rate:.1f} > Engine: {pulse_limit:.1f})"
             alert_level = 2
             
         results.append({
@@ -259,35 +246,25 @@ def execute_kinematic_math(doc_df, excel_records, engine_ytd_hours):
             "Engine Pulse (h/d)": round(pulse_limit, 2),
             "Status": status,
             "Physics Violation": violation,
-            "AlertLevel": alert_level # Hidden column for coloring
+            "AlertLevel": alert_level 
         })
 
     return pd.DataFrame(results), engine_pulse
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 4. ORCHESTRATOR & VISUALS
+# 4. ORCHESTRATOR
 # ═══════════════════════════════════════════════════════════════════════════════
 
-st.markdown(f"""
+st.markdown("""
 <div class="hero">
-    <div class="hero-left">
-        <img src="{SVG_LOGO}" class="hero-logo" alt=""/>
-        <div>
-            <div class="hero-title">PMS AUDITOR</div>
-            <div class="hero-sub">Kinematic Mathematics Engine</div>
-        </div>
-    </div>
-    <div class="hero-badge">
-        <span style="color:var(--cyan)">KERNEL</span>&ensp;Immutable Sync<br>
-        <span style="color:var(--gold)">ORACLE</span>&ensp;Pure Physics<br>
-        <span style="color:#ffffff">BUILD</span>&ensp;v15.0.0
-    </div>
+    <div class="hero-title">PMS AUDITOR</div>
+    <div class="hero-sub">Kinematic Mathematics Engine v15.0</div>
 </div>
 """, unsafe_allow_html=True)
 
 col1, col2 = st.columns(2)
 with col1:
-    st.markdown("<div style='color:var(--muted); font-size:0.85rem; font-weight:600; margin-bottom:10px; letter-spacing: 0.1em;'>REPORT INGESTION (.DOCX)</div>", unsafe_allow_html=True)
+    st.markdown("<div style='color:var(--muted); font-size:0.85rem; font-weight:600; margin-bottom:10px; letter-spacing: 0.1em;'>REPORT INGESTION (.DOC / .DOCX)</div>", unsafe_allow_html=True)
     doc_file = st.file_uploader("Upload Word Report", type=["doc", "docx"], label_visibility="collapsed")
 with col2:
     st.markdown("<div style='color:var(--muted); font-size:0.85rem; font-weight:600; margin-bottom:10px; letter-spacing: 0.1em;'>MASTER LEDGER INGESTION (.XLSX)</div>", unsafe_allow_html=True)
@@ -296,18 +273,18 @@ with col2:
 if doc_file and excel_file:
     with st.spinner("Compiling Mathematical Topology..."):
         try:
-            # 1. Unbreakable Parsing
-            doc_df = parse_pms_binary_doc(doc_file.getvalue())
+            # 1. Extraction with File Names intact
+            doc_df = parse_pms_binary_doc(doc_file.getvalue(), doc_file.name)
             excel_records, engine_ytd_hours = parse_master_pms_excel(excel_file.getvalue())
             
             if doc_df.empty:
-                st.error("Extraction Core Halted: No recognized component data found in Word document.")
+                st.error("Extraction Core Halted: No recognized component data found in the Word document. Ensure it matches standard templates.")
                 st.stop()
 
-            # 2. Mathematical Execution
+            # 2. Math Engine
             master_df, engine_pulse = execute_kinematic_math(doc_df, excel_records, engine_ytd_hours)
 
-            # 3. HUD Metrics
+            # 3. HUD Output
             total_audited = len(master_df)
             desync_count = len(master_df[master_df['Status'] == 'LEDGER DESYNC'])
             physics_breaches = len(master_df[master_df['AlertLevel'] >= 2])
@@ -315,24 +292,15 @@ if doc_file and excel_file:
             st.markdown(f"""
             <div class="hud-grid">
                 <div class="hud-card" style="border-bottom: 2px solid var(--blue);">
-                    <div class="hud-header">
-                        <div class="hud-title">Components Audited</div>
-                        <img src="{SVG_LEDGER}" class="hud-icon"/>
-                    </div>
+                    <div class="hud-title">Components Audited</div>
                     <div class="hud-val">{total_audited}</div>
                 </div>
                 <div class="hud-card" style="border-bottom: 2px solid {'var(--gold)' if desync_count > 0 else 'var(--cyan)'};">
-                    <div class="hud-header">
-                        <div class="hud-title">Ledger Desyncs</div>
-                        <img src="{SVG_MATH}" class="hud-icon"/>
-                    </div>
+                    <div class="hud-title">Ledger Desyncs</div>
                     <div class="hud-val" style="color:{'var(--gold)' if desync_count > 0 else 'var(--cyan)'};">{desync_count}</div>
                 </div>
                 <div class="hud-card" style="border-bottom: 2px solid {'var(--red)' if physics_breaches > 0 else 'var(--cyan)'};">
-                    <div class="hud-header">
-                        <div class="hud-title">Physics Breaches</div>
-                        <img src="{SVG_ALERT}" class="hud-icon"/>
-                    </div>
+                    <div class="hud-title">Physics Breaches</div>
                     <div class="hud-val" style="color:{'var(--red)' if physics_breaches > 0 else 'var(--text)'};">{physics_breaches}</div>
                 </div>
             </div>
@@ -341,7 +309,6 @@ if doc_file and excel_file:
             t1, t2, t3 = st.tabs(["IMMUTABLE LEDGER", "KINEMATIC ORACLE", "RAW EXTRACTION"])
 
             with t1:
-                # Safe Display Logic
                 display_cols = [c for c in master_df.columns if c != 'AlertLevel']
                 view_df = master_df[display_cols]
                 
@@ -360,17 +327,15 @@ if doc_file and excel_file:
             with t2:
                 st.markdown("<h4 style='color:var(--text); font-weight:600; margin-bottom:15px;'>The Kinematic Limit Horizon</h4>", unsafe_allow_html=True)
                 
-                plot_df = master_df[master_df['AlertLevel'] != 1].copy() # Remove orphans for graphing
+                plot_df = master_df[master_df['AlertLevel'] != 1].copy() 
                 if not plot_df.empty:
-                    # Sort to bring highest burn rates to top
                     plot_df = plot_df.sort_values('Burn Rate (h/d)', ascending=True).tail(25)
-                    
                     colors = ["#ff2a55" if lvl == 3 else "#c9a84c" if lvl == 2 else "#00e0b0" for lvl in plot_df['AlertLevel']]
                     
                     fig = go.Figure()
                     fig.add_trace(go.Bar(
                         y=plot_df['Component'], x=plot_df['Burn Rate (h/d)'], orientation='h',
-                        marker_color=colors, marker_line_color="#030712", marker_line_width=1,
+                        marker_color=colors, marker_line_width=0,
                         text=plot_df['Burn Rate (h/d)'].astype(str) + " h/d", textposition='outside'
                     ))
                     
@@ -381,8 +346,7 @@ if doc_file and excel_file:
                     fig.update_layout(
                         plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(family="Inter", color='#94a3b8'),
                         xaxis=dict(title="Accumulated Burn Rate (Hours/Day)", gridcolor='rgba(255,255,255,0.05)', zerolinecolor="rgba(255,255,255,0.05)"),
-                        yaxis=dict(gridcolor='rgba(0,0,0,0)'),
-                        height=650, margin=dict(l=10, r=40, t=30, b=20)
+                        yaxis=dict(gridcolor='rgba(0,0,0,0)'), height=650, margin=dict(l=10, r=40, t=30, b=20)
                     )
                     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
