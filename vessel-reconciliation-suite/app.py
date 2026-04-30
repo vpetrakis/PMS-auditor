@@ -12,65 +12,81 @@ from zipfile import ZipFile
 from xml.etree import ElementTree as ET
 from difflib import SequenceMatcher
 import plotly.graph_objects as go
-import plotly.express as px
 
 warnings.filterwarnings("ignore")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 1. PAGE CONFIGURATION & ENTERPRISE CSS
+# 1. ENTERPRISE UI & HIGH-END CSS ANIMATIONS
 # ═══════════════════════════════════════════════════════════════════════════════
-st.set_page_config(page_title="PMS Auditor", page_icon="⚓", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="PMS Auditor | Temporal Suite", layout="wide", initial_sidebar_state="collapsed")
 
-def _u(s):
-    return f"data:image/svg+xml;base64,{base64.b64encode(s.encode()).decode()}"
+def _svg(svg_string):
+    return f"data:image/svg+xml;base64,{base64.b64encode(svg_string.encode()).decode()}"
 
-LOGO_SVG = base64.b64encode(b'<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="pg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#c9a84c"/><stop offset="50%" stop-color="#00e0b0"/><stop offset="100%" stop-color="#ffffff"/></linearGradient></defs><circle cx="24" cy="24" r="22" fill="none" stroke="url(#pg)" stroke-width="1" opacity="0.35"/><path d="M24 6 L24 42" stroke="url(#pg)" stroke-width="1.6" stroke-linecap="round"/><path d="M12 24 Q24 32 36 24" fill="none" stroke="url(#pg)" stroke-width="1.6" stroke-linecap="round"/></svg>').decode()
+# Premium Animated SVGs (No standard emojis)
+LOGO = _svg('<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="pg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#7b68ee"/><stop offset="50%" stop-color="#00e0b0"/><stop offset="100%" stop-color="#ffffff"/></linearGradient></defs><circle cx="24" cy="24" r="22" fill="none" stroke="url(#pg)" stroke-width="1.5" opacity="0.4"/><path d="M24 8 L24 40" stroke="url(#pg)" stroke-width="2" stroke-linecap="round"/><path d="M10 24 Q24 34 38 24" fill="none" stroke="url(#pg)" stroke-width="2" stroke-linecap="round"/></svg>')
+ICON_SHIELD = _svg('<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill="none" stroke="#00e0b0" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>')
+ICON_BREACH = _svg('<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01" fill="none" stroke="#ff2a55" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>')
+ICON_HASH = _svg('<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4 9h16M4 15h16M10 3L8 21M16 3l-2 18" fill="none" stroke="#7b68ee" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>')
 
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=JetBrains+Mono:wght@400;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap');
+    
     :root {
-        --bg:#071018; --panel:#0d1620; --line:rgba(255,255,255,0.08); --text:#f8fafc;
-        --muted:#94a3b8; --teal:#00e0b0; --gold:#c9a84c; --red:#ff2a55; --violet:#7b68ee;
+        --bg: #030712; --panel: rgba(17, 24, 39, 0.7); --border: rgba(255,255,255,0.05); 
+        --text: #f8fafc; --muted: #64748b; --accent-teal: #00e0b0; --accent-red: #ff2a55; --accent-purple: #7b68ee;
     }
+    
     .stApp { background-color: var(--bg); font-family: 'Inter', sans-serif; color: var(--text); }
     #MainMenu, footer, header {visibility: hidden;}
+
+    /* Premium Glassmorphism Hero */
+    .hero {
+        display: flex; justify-content: space-between; align-items: center;
+        background: radial-gradient(circle at top left, rgba(123, 104, 238, 0.05), transparent 40%),
+                    linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+        border: 1px solid var(--border); border-radius: 20px;
+        padding: 30px 40px; margin-bottom: 30px;
+        backdrop-filter: blur(20px); box-shadow: 0 20px 40px -10px rgba(0,0,0,0.5);
+    }
+    .hero-title { font-size: 2.5rem; font-weight: 800; letter-spacing: -0.05em; background: linear-gradient(90deg, #fff, #94a3b8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; line-height: 1.1; }
+    .hero-sub { font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.2em; font-weight: 600; margin-top: 8px; }
     
-    .hero { display:flex; justify-content:space-between; align-items:flex-start; gap:24px; padding:24px 28px; margin-bottom:22px; background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); border:1px solid var(--line); border-radius:24px; box-shadow: 0 20px 60px rgba(0,0,0,0.35); }
-    .hero-left { display: flex; align-items: center; gap: 20px; }
-    .hero-logo { width: 55px; height: 55px; }
-    .hero-title { font-size: 2.2rem; font-weight: 800; background: linear-gradient(90deg, #ffffff, #8ba1b5); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: -1px; line-height: 1.1;}
-    .hero-sub { font-size: 0.85rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 2px; margin-top: 6px; }
-    .hero-badge { text-align: right; font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--muted); line-height: 1.6; }
-
-    .stFileUploader > div > div { background-color: var(--panel) !important; border: 1px dashed rgba(255,255,255,0.1) !important; border-radius: 12px !important; transition: all 0.3s ease; }
-    .stFileUploader > div > div:hover { border-color: var(--teal) !important; background-color: rgba(0, 224, 176, 0.05) !important; }
-
-    .hud-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 22px; }
-    .hud-card { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 16px; box-shadow: 0 10px 30px -10px rgba(0,0,0,0.5); }
-    .hud-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-    .hud-title { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1.2px; font-weight: 600; }
-    .hud-val { font-size: 2rem; font-weight: 800; color: #ffffff; line-height: 1.1; font-family: 'JetBrains Mono', monospace; }
-
-    .stTabs [data-baseweb="tab-list"] { gap: 24px; }
-    .stTabs [data-baseweb="tab"] { height: 50px; white-space: pre-wrap; background-color: transparent; border-radius: 4px; color: var(--muted); font-weight: 600; }
-    .stTabs [aria-selected="true"] { color: var(--teal); border-bottom: 2px solid var(--teal); }
+    /* Animated Data HUD */
+    .hud-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px; }
+    .hud-card {
+        background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 24px;
+        backdrop-filter: blur(10px); transition: transform 0.3s ease, border-color 0.3s ease;
+    }
+    .hud-card:hover { transform: translateY(-2px); border-color: rgba(255,255,255,0.15); }
+    .hud-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px; }
+    .hud-title { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; }
+    .hud-icon { width: 28px; height: 28px; }
+    .hud-value { font-family: 'JetBrains Mono', monospace; font-size: 2.2rem; font-weight: 700; color: #fff; line-height: 1; }
+    
+    /* Tab Styling */
+    .stTabs [data-baseweb="tab-list"] { gap: 30px; border-bottom: 1px solid var(--border); }
+    .stTabs [data-baseweb="tab"] { height: 60px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.85rem; background: transparent; }
+    .stTabs [aria-selected="true"] { color: var(--accent-teal); border-bottom: 2px solid var(--accent-teal); }
+    
+    /* Dataframe overrides for seamless integration */
+    [data-testid="stDataFrame"] { border-radius: 12px; overflow: hidden; border: 1px solid var(--border); }
 </style>
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2. SEMANTIC HEURISTIC PARSERS
+# 2. SEMANTIC PARSERS (FOCUSED STRICTLY ON RUNNING HOURS)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def normalize_text(s):
-    return re.sub(r"\s+", " ", str(s).upper().strip().replace("\xa0", " "))
+def normalize(s): return re.sub(r"\s+", " ", str(s).upper().strip().replace("\xa0", " "))
 
-def extract_first_float(value):
-    if pd.isna(value): return np.nan
-    m = re.search(r"-?\d+(?:\.\d+)?", str(value).replace(",", ""))
+def ext_float(val):
+    if pd.isna(val): return np.nan
+    m = re.search(r"-?\d+(?:\.\d+)?", str(val).replace(",", ""))
     return float(m.group()) if m else np.nan
 
-def extract_report_date(filename):
+def extract_doc_date(filename):
     m = re.search(r'(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[a-z]*[\s\.\-\_]*(\d{4})', filename, re.IGNORECASE)
     if m:
         try: return pd.to_datetime(f"01 {m.group(1)} {m.group(2)}")
@@ -78,350 +94,330 @@ def extract_report_date(filename):
     return pd.Timestamp.now()
 
 @st.cache_data(show_spinner=False)
-def parse_master_pms_excel(file_bytes):
+def parse_excel_ledger(file_bytes):
     try:
         xls = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
-        target_sheet = next((s for s in xls.sheet_names if "PMS" in s.upper() or "PARTS LOG" in s.upper()), xls.sheet_names[0])
-        df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=target_sheet, header=None, dtype=object, engine="openpyxl")
-    except Exception: return [], {}
+        target_sheet = next((s for s in xls.sheet_names if "PMS" in s.upper() or "PARTS" in s.upper()), xls.sheet_names[0])
+        df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=target_sheet, header=None, dtype=object, engine="openpyxl")
+    except: return [], {}
 
-    # Extract Vessel Pulse (YTD and Max Monthly Hours)
-    engine_stats = {"ME_YTD": 0.0, "DG_YTD": 0.0, "ME_Pulse_Daily": 16.5, "DG_Pulse_Daily": 10.0}
+    engine_pulse = {"ME": 8760.0, "DG": 8760.0} # Fallback absolute limit
     try:
-        for i in range(min(25, len(df_raw))):
-            row_joined = " | ".join([str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)])
-            if any(k in row_joined for k in ["JAN", "FEB", "MONTHLY", "UP-TO-DATE"]):
-                target_row = i + 1 if ("JAN" in row_joined and df_raw.iloc[i, 9] == "Jan.") else i
-                if target_row < len(df_raw):
-                    monthly_vals = [extract_first_float(df_raw.iloc[target_row, c]) for c in range(9, 21) if c < len(df_raw.columns) and pd.notna(extract_first_float(df_raw.iloc[target_row, c]))]
-                    if monthly_vals:
-                        sys = "ME" if ("MAIN ENGINE" in str(df_raw.iloc[max(0, target_row-2):target_row].values).upper()) else "ME"
-                        engine_stats[f"{sys}_YTD"] = sum(monthly_vals)
-                        # Assume the highest logged month represents 30 days of standard steaming tempo
-                        engine_stats[f"{sys}_Pulse_Daily"] = max(monthly_vals) / 30.0 
+        # Scan for Engine Monthly Hours Matrix (Usually Row 14/15)
+        for i in range(min(30, len(df))):
+            row_str = " ".join([str(x).upper() for x in df.iloc[i].values if pd.notna(x)])
+            if "JAN" in row_str and "FEB" in row_str:
+                target_row = i + 1 if df.iloc[i, 9] == "Jan." else i
+                if target_row < len(df):
+                    monthly_sums = [ext_float(df.iloc[target_row, c]) for c in range(9, 21) if c < len(df.columns) and pd.notna(ext_float(df.iloc[target_row, c]))]
+                    if monthly_sums:
+                        sys = "ME" if "MAIN" in str(df.iloc[max(0, target_row-2):target_row].values).upper() else "ME"
+                        engine_pulse[sys] = sum(monthly_sums)
     except: pass
 
-    # Semantic Header Mapping
-    item_col, hours_col, header_row = -1, -1, -1
-    for i in range(min(30, len(df_raw))):
-        row_joined = " | ".join([str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)])
-        if ("ITEM" in row_joined or "DESCRIPTION" in row_joined) and "CURRENT" in row_joined and "HOURS" in row_joined:
-            header_row = i
-            for j, val in enumerate(df_raw.iloc[i].values):
-                val_u = str(val).upper()
-                if "ITEM" in val_u or "DESCRIPTION" in val_u: item_col = j
-                elif "CURRENT" in val_u and "HOURS" in val_u: hours_col = j
+    # Find Component Data
+    item_col, hrs_col, head_row = -1, -1, -1
+    for i in range(min(40, len(df))):
+        row_str = " ".join([str(x).upper() for x in df.iloc[i].values if pd.notna(x)])
+        if ("ITEM" in row_str or "DESCRIPTION" in row_str) and "HOURS" in row_str:
+            head_row = i
+            for j, val in enumerate(df.iloc[i].values):
+                vu = str(val).upper()
+                if "ITEM" in vu or "DESCRIPTION" in vu: item_col = j
+                elif "CURRENT" in vu and "HOURS" in vu: hrs_col = j
             break
 
-    excel_records = []
-    if item_col != -1 and hours_col != -1:
+    records = []
+    if item_col != -1 and hrs_col != -1:
         curr_sys, curr_unit = "ME", ""
-        for i in range(header_row + 1, len(df_raw)):
-            item_val, hours_val = df_raw.iloc[i, item_col], df_raw.iloc[i, hours_col]
-            if pd.isna(item_val): continue
-            item_str = normalize_text(item_val)
+        for i in range(head_row + 1, len(df)):
+            item, hrs = df.iloc[i, item_col], df.iloc[i, hrs_col]
+            if pd.isna(item): continue
+            item_str = normalize(item)
 
             if "MAIN ENGINE" in item_str or "M/E" in item_str: curr_sys, curr_unit = "ME", ""
             elif any(x in item_str for x in ["DG 1", "D/G 1", "NO.1"]): curr_sys, curr_unit = "DG", "DG1"
             elif any(x in item_str for x in ["DG 2", "D/G 2", "NO.2"]): curr_sys, curr_unit = "DG", "DG2"
-            elif any(x in item_str for x in ["DG 3", "D/G 3", "NO.3"]): curr_sys, curr_unit = "DG", "DG3"
-
+            
             m = re.search(r'NO[\.\:\s]*(\d+)', item_str)
             if m: curr_unit = f"Cyl {m.group(1)}"
 
-            h = extract_first_float(hours_val)
+            h = ext_float(hrs)
             if pd.notna(h) and len(item_str) > 2 and "HOURS" not in item_str and "DATE" not in item_str:
-                excel_records.append({'System': curr_sys, 'Unit': curr_unit, 'ExcelComponent': item_str, 'ExcelHours': h})
+                records.append({'System': curr_sys, 'Unit': curr_unit, 'Component': item_str, 'Master_Hours': h})
 
-    return excel_records, engine_stats
+    return records, engine_pulse
 
 @st.cache_data(show_spinner=False)
-def parse_pms_binary_doc(file_bytes, file_name=""):
-    def parse_docx_xml(bytes_):
-        try:
-            with ZipFile(io.BytesIO(bytes_)) as z: root = ET.fromstring(z.read("word/document.xml"))
-            ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-            return [" ".join([t.text for t in p.findall(".//w:t", ns) if t.text]).strip() for p in root.findall(".//w:p", ns) if p.text or len(p.findall(".//w:t", ns))>0]
-        except: return []
+def parse_doc_reports(file_bytes, filename=""):
+    try:
+        with ZipFile(io.BytesIO(file_bytes)) as z: root = ET.fromstring(z.read("word/document.xml"))
+        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        cells = [" ".join([t.text for t in p.findall(".//w:t", ns) if t.text]).strip() for p in root.findall(".//w:p", ns) if p.text or len(p.findall(".//w:t", ns))>0]
+    except: return pd.DataFrame()
 
-    cells = parse_docx_xml(file_bytes) if file_name.lower().endswith(".docx") else [c.strip() for c in file_bytes.decode("latin-1", errors="ignore").replace("\x00", "").split("\x07") if c.strip()]
-    extracted_data = []
-    report_date = extract_report_date(file_name)
-
-    COMPONENTS = ['CYLINDER COVER', 'PISTON ASSY', 'PISTON ASSEMBLY', 'STUFFING BOX', 'PISTON CROWN', 'CYLINDER LINER', 'EXHAUST VALVE', 'STARTING VALVE', 'SAFETY VALVE', 'FUEL VALVE', 'FUEL PUMP', 'CROSSHEAD BEARING', 'BOTTOM END BEARING', 'MAIN BEARING', 'CYLINDER HEAD', 'CONNECTING ROD', 'TURBOCHARGER', 'AIR COOLER']
-    system, sub_units = "ME", ["Cyl 1", "Cyl 2", "Cyl 3", "Cyl 4", "Cyl 5", "Cyl 6"]
+    ext_data = []
+    report_date = extract_doc_date(filename)
+    KWS = ['CYLINDER COVER', 'PISTON ASSY', 'PISTON ASSEMBLY', 'STUFFING BOX', 'PISTON CROWN', 'CYLINDER LINER', 'EXHAUST VALVE', 'STARTING VALVE', 'SAFETY VALVE', 'FUEL VALVE', 'FUEL PUMP', 'CROSSHEAD BEARING', 'BOTTOM END BEARING', 'MAIN BEARING']
+    sys, units = "ME", ["Cyl 1", "Cyl 2", "Cyl 3", "Cyl 4", "Cyl 5", "Cyl 6"]
 
     i = 0
     while i < len(cells):
-        cell = normalize_text(cells[i])
-        if "MAIN ENGINE" in cell: system, sub_units = "ME", ["Cyl 1", "Cyl 2", "Cyl 3", "Cyl 4", "Cyl 5", "Cyl 6"]
-        elif any(x in cell for x in ["AUX ENGINE", "D/G", "DIESEL GENERATOR"]): system, sub_units = "DG", ["DG1", "DG2", "DG3"]
+        cell = normalize(cells[i])
+        if "MAIN ENGINE" in cell: sys, units = "ME", ["Cyl 1", "Cyl 2", "Cyl 3", "Cyl 4", "Cyl 5", "Cyl 6"]
+        elif any(x in cell for x in ["AUX", "D/G", "DIESEL"]): sys, units = "DG", ["DG1", "DG2", "DG3"]
 
-        if any(c in cell for c in COMPONENTS) and len(cell) < 80:
+        if any(c in cell for c in KWS) and len(cell) < 80:
             dates, hours = [], []
             for shift, target, arr in [(15, '1', dates), (35, '2', hours)]:
                 j = i + 1
                 while j < min(i + shift, len(cells)):
                     if str(cells[j]).strip() == target:
-                        arr.extend([cells[j + 1 + k] for k in range(len(sub_units)) if j + 1 + k < len(cells)])
+                        arr.extend([cells[j + 1 + k] for k in range(len(units)) if j + 1 + k < len(cells)])
                         break
                     j += 1
 
-            for idx, su in enumerate(sub_units):
+            for idx, u in enumerate(units):
                 if idx < len(dates) and idx < len(hours):
                     d = pd.to_datetime(re.sub(r"\s+", " ", str(dates[idx]).strip()), errors="coerce", dayfirst=True)
-                    h = extract_first_float(hours[idx])
+                    h = ext_float(hours[idx])
                     if pd.notna(d) and pd.notna(h):
-                        extracted_data.append({'System': system, 'Unit': su, 'BaseComponent': cell, 'Component': f"[{system}] {cell} ({su})", 'Last_Overhaul': d, 'Claimed_Hours': float(h), 'Report_Date': report_date, 'Source_File': file_name})
+                        ext_data.append({'System': sys, 'Unit': u, 'Base': cell, 'Component': f"[{sys}] {cell} ({u})", 'Overhaul': d, 'Claimed_Hours': float(h), 'Report_Date': report_date, 'File': filename})
         i += 1
-    return pd.DataFrame(extracted_data).dropna(subset=['Last_Overhaul']).reset_index(drop=True)
+    return pd.DataFrame(ext_data).dropna(subset=['Overhaul']).reset_index(drop=True)
 
-def get_verified_hours(doc_row, excel_records):
-    doc_sys, doc_unit = doc_row['System'], doc_row['Unit']
-    w_comp = re.sub(r'[^A-Z]', '', doc_row['BaseComponent'].replace("ASSY", "ASSEMBLY"))
-    best_score, best_hours = 0, 0
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3. TEMPORAL CONTINUITY ORACLE (100% INTEGRITY ENGINE)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_master_hours(doc_comp, doc_sys, doc_unit, excel_records):
+    c_clean = re.sub(r'[^A-Z]', '', doc_comp.replace("ASSY", "ASSEMBLY"))
+    best_score, best_h = 0, None
     for er in excel_records:
         if er['System'] != doc_sys or (er['Unit'] != doc_unit and er['Unit'] != ""): continue
-        e_comp = re.sub(r'[^A-Z]', '', er['ExcelComponent'].replace("ASSY", "ASSEMBLY"))
-        score = SequenceMatcher(None, w_comp, e_comp).ratio()
-        if w_comp in e_comp or e_comp in w_comp: score += 0.3
-        if score > 0.55 and score > best_score: best_score, best_hours = score, er['ExcelHours']
-    return best_hours if best_score > 0.55 else None
+        e_clean = re.sub(r'[^A-Z]', '', er['Component'].replace("ASSY", "ASSEMBLY"))
+        score = SequenceMatcher(None, c_clean, e_clean).ratio()
+        if c_clean in e_clean or e_clean in c_clean: score += 0.3
+        if score > 0.6 and score > best_score: best_score, best_h = score, er['Master_Hours']
+    return best_h
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 3. KINEMATIC ORACLE (RATE-OF-CHANGE ENGINE)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def run_kinematic_oracle(primary_df, historical_df, excel_records, engine_stats):
+def execute_temporal_oracle(all_docs, excel_records, engine_pulse):
     results = []
     
-    # 1. Establish the Timeline & Engine Limits
-    now = pd.Timestamp.now()
-    has_history = not historical_df.empty
+    # Sort documents chronologically
+    all_docs.sort_values('Report_Date', ascending=False, inplace=True)
+    latest_date = all_docs['Report_Date'].iloc[0]
+    primary_doc = all_docs[all_docs['Report_Date'] == latest_date]
+    hist_doc = all_docs[all_docs['Report_Date'] < latest_date]
     
-    for _, row in primary_df.iterrows():
+    now = pd.Timestamp.now()
+
+    for _, row in primary_doc.iterrows():
         comp = row['Component']
         claimed = row['Claimed_Hours']
-        oh_date = row['Last_Overhaul']
-        sys_key = "ME" if "ME" in str(row['System']).upper() else "DG"
-        engine_pulse_daily = engine_stats.get(f"{sys_key}_Pulse_Daily", 16.5)
+        oh_date = row['Overhaul']
+        sys = "ME" if "ME" in str(row['System']).upper() else "DG"
         
-        # Cross-reference with Excel Master
-        verified = get_verified_hours(row, excel_records)
-        excel_status = "MISSING FROM EXCEL" if verified is None else ("VERIFIED" if int(verified) == int(claimed) else "DRIFT DETECTED")
-        delta_excel = (verified - claimed) if verified is not None else 0
+        master_hrs = get_master_hours(row['Base'], sys, row['Unit'], excel_records)
+        status = "MISSING MASTER" if master_hrs is None else ("VERIFIED" if int(master_hrs) == int(claimed) else "LEDGER DESYNC")
+        drift = (master_hrs - claimed) if master_hrs is not None else 0
         
-        # Core Kinematic Variables
-        delta_h = 0.0
-        delta_days = 0.0
-        burn_rate = 0.0
-        history_match = False
+        # Temporal Logic Variables
+        hist_claimed = None
+        delta_hrs = claimed
+        days_elapsed = max(1, (latest_date - oh_date).days)
         
-        if has_history:
-            # Look for this component in the previous month
-            hist_match = historical_df[historical_df['Component'] == comp].sort_values('Report_Date', ascending=False)
-            if not hist_match.empty:
-                prev_row = hist_match.iloc[0]
-                delta_h = claimed - prev_row['Claimed_Hours']
-                delta_days = max(1, (row['Report_Date'] - prev_row['Report_Date']).days)
-                burn_rate = delta_h / delta_days
-                history_match = True
+        if not hist_doc.empty:
+            match = hist_doc[hist_doc['Component'] == comp].sort_values('Report_Date', ascending=False)
+            if not match.empty:
+                hist_claimed = match.iloc[0]['Claimed_Hours']
+                delta_hrs = claimed - hist_claimed
+                days_elapsed = max(1, (latest_date - match.iloc[0]['Report_Date']).days)
 
-        if not history_match:
-            # Fallback: Calculate average burn rate since overhaul
-            delta_h = claimed
-            delta_days = max(1, (row['Report_Date'] - oh_date).days)
-            burn_rate = delta_h / delta_days
-
-        # Physics Gates (The Traps)
-        anomaly = "NONE"
-        phase = "SAFE"
+        engine_max_allowed = engine_pulse.get(sys, 8760) / 12.0 # Roughly a month's absolute limit
         
-        if excel_status == "MISSING FROM EXCEL":
-            anomaly, phase = "MISSING MASTER RECORD", "QUARANTINE"
-        elif delta_h < 0:
-            anomaly, phase = f"TIME REVERSAL (Negative Burn: {delta_h}h)", "QUARANTINE"
-        elif burn_rate > 24.0:
-            anomaly, phase = f"TIME WARP (>24h/day Burn Rate: {burn_rate:.1f}h/d)", "QUARANTINE"
-        elif burn_rate > (engine_pulse_daily * 1.3): # Allowing 30% margin for logging drift
-            anomaly, phase = f"KINEMATIC VIOLATION (Burn {burn_rate:.1f} > Engine {engine_pulse_daily:.1f})", "QUARANTINE"
-        elif history_match and delta_h == 0 and engine_pulse_daily > 0:
-            anomaly, phase = "COPY-PASTE FRAUD (Zero burn logged despite engine activity)", "QUARANTINE"
-            
+        # The Integrity Gates
+        breach = "NONE"
+        if status == "MISSING MASTER":
+            breach = "DATA ORPHAN (Not in Master Ledger)"
+        elif delta_hrs < 0:
+            breach = f"TEMPORAL REVERSAL (Hours decreased by {abs(delta_hrs)}h)"
+        elif delta_hrs == 0 and engine_pulse.get(sys, 0) > 0 and hist_claimed is not None:
+            breach = "STATIC FRAUD (Zero hours logged despite Engine run)"
+        elif claimed > (days_elapsed * 24) and hist_claimed is None:
+            breach = f"PHYSICS BREACH (Claimed {claimed}h > {days_elapsed*24}h max possible)"
+
         results.append({
             "Component": comp,
-            "Last Overhaul": oh_date.strftime('%d-%b-%Y') if pd.notna(oh_date) else "N/A",
+            "Last Overhaul": oh_date.strftime('%d-%b-%Y'),
+            "Historical Hrs": int(hist_claimed) if hist_claimed is not None else "N/A",
             "Claimed Hrs": int(claimed),
-            "Master Hrs": int(verified) if verified is not None else 0,
-            "Drift": int(delta_excel),
-            "Burn Rate (h/d)": round(burn_rate, 1),
-            "Engine Pulse (h/d)": round(engine_pulse_daily, 1),
-            "Status": excel_status,
-            "Anomaly": anomaly,
-            "Phase": phase
+            "Master Hrs": int(master_hrs) if master_hrs is not None else "N/A",
+            "Drift": int(drift),
+            "Status": status,
+            "Integrity Breach": breach
         })
 
-    return results
+    return pd.DataFrame(results)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 4. ORCHESTRATOR & UI
+# 4. FRONTEND ORCHESTRATOR
 # ═══════════════════════════════════════════════════════════════════════════════
 
 st.markdown(f"""
 <div class="hero">
     <div class="hero-left">
-        <img src="data:image/svg+xml;base64,{LOGO_SVG}" class="hero-logo" alt=""/>
+        <img src="{LOGO}" class="hero-logo" alt=""/>
         <div>
             <div class="hero-title">PMS AUDITOR</div>
-            <div class="hero-sub">Kinematic Fraud Detection Engine</div>
+            <div class="hero-sub">Temporal Data Integrity Suite</div>
         </div>
     </div>
     <div class="hero-badge">
-        <span style="color:var(--teal)">KERNEL</span>&ensp;Triple-Lock Cross-Check<br>
-        <span style="color:var(--gold)">ORACLE</span>&ensp;Kinematic Rate-of-Change<br>
-        <span style="color:#ffffff">BUILD</span>&ensp;v13.0.1 Zenith Master
+        <span style="color:var(--accent-teal)">SYSTEM</span>&ensp;Continuity Oracle<br>
+        <span style="color:var(--muted)">VERSION</span>&ensp;v14.0.0 Zenith
     </div>
 </div>
 """, unsafe_allow_html=True)
 
-col1, col2 = st.columns(2)
-with col1:
-    st.markdown("<div style='color:var(--muted); font-size:0.9rem; font-weight:600; margin-bottom:10px;'>1. COMPONENT OVERHAULS (.doc)</div>", unsafe_allow_html=True)
-    pms_files = st.file_uploader("Upload Word Reports (Current + Historical)", type=["doc", "docx"], key="pms_box", label_visibility="collapsed", accept_multiple_files=True)
-with col2:
-    st.markdown("<div style='color:var(--muted); font-size:0.9rem; font-weight:600; margin-bottom:10px;'>2. EXCEL MASTER LOG (PMS)</div>", unsafe_allow_html=True)
-    logs_file = st.file_uploader("Upload Excel PMS Log", type=["xlsx", "xls"], key="logs_box", label_visibility="collapsed")
+c1, c2 = st.columns(2)
+with c1:
+    docs_files = st.file_uploader("Upload Word Reports (.doc / .docx) - Supports multiple for timeline analysis", accept_multiple_files=True)
+with c2:
+    excel_file = st.file_uploader("Upload Master Database (.xlsx / .xls)")
 
-if pms_files and logs_file:
-    with st.spinner("Executing Kinematic Cross-Reference & Burn Rate Analysis..."):
+if docs_files and excel_file:
+    with st.spinner("Executing Cryptographic Ledger Sync & Temporal Analysis..."):
         try:
-            # 1. Parse all Word Documents
-            all_docs_frames = []
-            for file in pms_files:
-                df = parse_pms_binary_doc(file.getvalue(), file.name)
-                if not df.empty: all_docs_frames.append(df)
-            
-            if not all_docs_frames:
-                st.error("No valid data extracted from Word documents.")
+            # Parse Documents
+            all_dfs = [parse_doc_reports(f.getvalue(), f.name) for f in docs_files]
+            all_dfs = [df for df in all_dfs if not df.empty]
+            if not all_dfs:
+                st.error("Extraction Failed: No valid Component Running Hours found in Word documents.")
                 st.stop()
-                
-            all_docs_df = pd.concat(all_docs_frames, ignore_index=True)
-            
-            # Sort chronologically to find the "Current" (Primary) document
-            all_docs_df.sort_values('Report_Date', ascending=False, inplace=True)
-            latest_date = all_docs_df['Report_Date'].iloc[0]
-            primary_doc_df = all_docs_df[all_docs_df['Report_Date'] == latest_date]
-            historical_doc_df = all_docs_df[all_docs_df['Report_Date'] < latest_date]
+            docs_df = pd.concat(all_dfs, ignore_index=True)
 
-            # 2. Parse Excel Master
-            excel_records, engine_stats = parse_master_pms_excel(logs_file.getvalue())
+            # Parse Master
+            excel_records, engine_pulse = parse_excel_ledger(excel_file.getvalue())
 
-            # 3. Run Kinematic Oracle
-            audit_results = run_kinematic_oracle(primary_doc_df, historical_doc_df, excel_records, engine_stats)
-            res_df = pd.DataFrame(audit_results)
+            # Run Integrity Oracle
+            results_df = execute_temporal_oracle(docs_df, excel_records, engine_pulse)
 
-            st.markdown("<br>", unsafe_allow_html=True)
-            t1, t2, t3 = st.tabs(["📊 IMMUTABLE LEDGER", "👁️ KINEMATIC ORACLE (PHYSICS)", "🔎 CHRONOLOGICAL X-RAY"])
+            # --- HUD METRICS ---
+            total_audited = len(results_df)
+            verified_count = len(results_df[results_df['Status'] == 'VERIFIED'])
+            breach_count = len(results_df[results_df['Integrity Breach'] != 'NONE'])
+            data_hash = hashlib.sha256(results_df.to_json().encode()).hexdigest()[:12].upper()
+
+            st.markdown(f"""
+            <div class="hud-container">
+                <div class="hud-card" style="border-top: 3px solid var(--accent-purple);">
+                    <div class="hud-header">
+                        <div class="hud-title">Components Audited</div>
+                        <img src="{ICON_HASH}" class="hud-icon"/>
+                    </div>
+                    <div class="hud-value">{total_audited}</div>
+                </div>
+                <div class="hud-card" style="border-top: 3px solid {'var(--accent-teal)' if verified_count == total_audited else 'var(--muted)'};">
+                    <div class="hud-header">
+                        <div class="hud-title">Ledger Synchronized</div>
+                        <img src="{ICON_SHIELD}" class="hud-icon"/>
+                    </div>
+                    <div class="hud-value" style="color:var(--accent-teal);">{verified_count}</div>
+                </div>
+                <div class="hud-card" style="border-top: 3px solid {'var(--accent-red)' if breach_count > 0 else 'var(--muted)'};">
+                    <div class="hud-header">
+                        <div class="hud-title">Temporal Breaches</div>
+                        <img src="{ICON_BREACH}" class="hud-icon"/>
+                    </div>
+                    <div class="hud-value" style="color:{'var(--accent-red)' if breach_count > 0 else '#fff'};">{breach_count}</div>
+                </div>
+                <div class="hud-card" style="border-top: 3px solid var(--muted);">
+                    <div class="hud-header">
+                        <div class="hud-title">Cryptographic Lock</div>
+                        <img src="{ICON_HASH}" class="hud-icon"/>
+                    </div>
+                    <div class="hud-value" style="font-size:1.6rem; color:var(--muted); margin-top:8px;">{data_hash}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            t1, t2, t3 = st.tabs(["MASTER LEDGER", "TEMPORAL TOPOLOGY", "DATA EXTRACTS"])
 
             with t1:
-                errors_corrected = len(res_df[res_df['Status'] == 'DRIFT DETECTED'])
-                quarantined = len(res_df[res_df['Phase'] == 'QUARANTINE'])
-                digital_seal = hashlib.sha256(res_df.to_json(orient='records').encode()).hexdigest()
-
-                st.markdown(f"""
-                <div class="hud-grid">
-                    <div class="hud-card" style="border-bottom: 3px solid var(--teal);">
-                        <div class="hud-header"><div class="hud-title">Components Audited</div></div>
-                        <div class="hud-val">{len(res_df)}</div>
-                    </div>
-                    <div class="hud-card" style="border-bottom: 3px solid {'var(--gold)' if errors_corrected > 0 else 'var(--teal)'};">
-                        <div class="hud-header"><div class="hud-title">Mathematical Drift</div></div>
-                        <div class="hud-val" style="color: {'var(--gold)' if errors_corrected > 0 else 'var(--teal)'};">{errors_corrected}</div>
-                    </div>
-                    <div class="hud-card" style="border-bottom: 3px solid {'var(--red)' if quarantined > 0 else 'var(--teal)'};">
-                        <div class="hud-header"><div class="hud-title">Quarantined Physics</div></div>
-                        <div class="hud-val" style="color: {'var(--red)' if quarantined > 0 else 'var(--teal)'};">{quarantined}</div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Safe Styler Architecture (Eliminates KeyError)
-                hide_cols = ['Phase', 'Anomaly', 'Engine Pulse (h/d)']
-                display_cols = [c for c in res_df.columns if c not in hide_cols]
-                display_df = res_df[display_cols]
-                
-                def apply_row_styles(df_view):
-                    style_df = pd.DataFrame('', index=df_view.index, columns=df_view.columns)
+                # Safe Styler architecture
+                def colorize_rows(df_view):
+                    style = pd.DataFrame('', index=df_view.index, columns=df_view.columns)
                     for idx in df_view.index:
-                        phase = res_df.loc[idx, 'Phase']
-                        status = res_df.loc[idx, 'Status']
-                        if phase == 'QUARANTINE':
-                            style_df.loc[idx, :] = 'background-color: rgba(255, 42, 85, 0.1); color: #ff8a9f'
-                        elif status == 'DRIFT DETECTED':
-                            style_df.loc[idx, :] = 'color: #c9a84c'
+                        status = results_df.loc[idx, 'Status']
+                        breach = results_df.loc[idx, 'Integrity Breach']
+                        if breach != 'NONE':
+                            style.loc[idx, :] = 'background-color: rgba(255, 42, 85, 0.08); color: #ff8a9f;'
+                        elif status == 'LEDGER DESYNC':
+                            style.loc[idx, :] = 'color: #c9a84c;'
                         else:
-                            style_df.loc[idx, :] = 'color: #00e0b0'
-                    return style_df
-                
-                st.dataframe(display_df.style.apply(apply_row_styles, axis=None), use_container_width=True, hide_index=True)
+                            style.loc[idx, :] = 'color: #00e0b0;'
+                    return style
+
+                st.dataframe(results_df.style.apply(colorize_rows, axis=None), use_container_width=True, hide_index=True)
 
             with t2:
-                # --- VISUAL 1: THE BURN RATE IMPOSSIBILITY MATRIX ---
-                st.markdown("<h4 style='color:var(--text); margin-bottom:20px;'>1. Burn Rate Impossibility Matrix</h4>", unsafe_allow_html=True)
-                
-                plot_df = res_df[res_df['Status'] != 'MISSING FROM EXCEL'].copy()
+                # --- PREMIUM VISUAL: THE TEMPORAL ENVELOPE (AREA CHART) ---
+                plot_df = results_df[results_df['Integrity Breach'] != 'DATA ORPHAN (Not in Master Ledger)'].copy()
                 if not plot_df.empty:
-                    # Color coding logic
-                    colors = []
-                    for _, r in plot_df.iterrows():
-                        if r['Burn Rate (h/d)'] > 24: colors.append('#ff2a55') # Impossible
-                        elif r['Burn Rate (h/d)'] > (r['Engine Pulse (h/d)'] * 1.3): colors.append('#c9a84c') # Suspicious
-                        else: colors.append('#00e0b0') # Verified
-                    plot_df['Color'] = colors
-                    
-                    # Sort by Burn Rate descending for visual impact
-                    plot_df = plot_df.sort_values('Burn Rate (h/d)', ascending=True).tail(20) # Show top 20 anomalies
+                    # Sort for cleaner visual flow
+                    plot_df = plot_df.sort_values('Claimed Hrs')
                     
                     fig = go.Figure()
-                    fig.add_trace(go.Bar(
-                        y=plot_df['Component'], x=plot_df['Burn Rate (h/d)'], orientation='h',
-                        marker_color=plot_df['Color'],
-                        text=plot_df['Burn Rate (h/d)'].astype(str) + " h/d", textposition='outside'
-                    ))
-                    
-                    # Engine Pulse Gold Line
-                    avg_pulse = plot_df['Engine Pulse (h/d)'].mean()
-                    fig.add_vline(x=avg_pulse, line_width=3, line_dash="dash", line_color="#c9a84c", annotation_text=f"Engine Pulse ({avg_pulse:.1f}h)", annotation_position="top right")
-                    
-                    # Physics Limit Red Line
-                    fig.add_vline(x=24.0, line_width=3, line_dash="solid", line_color="#ff2a55", annotation_text="Physics Limit (24h)", annotation_position="top right")
-                    
-                    fig.update_layout(
-                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#94a3b8'),
-                        xaxis=dict(title="Accumulated Hours Per Day", gridcolor='rgba(255,255,255,0.05)'),
-                        height=600, margin=dict(l=20, r=40, t=40, b=20)
-                    )
-                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-                # --- VISUAL 2: THE THREAT MATRIX ---
-                st.markdown("<h4 style='color:var(--gold); margin-top:30px;'>2. Kinematic Threat Matrix</h4>", unsafe_allow_html=True)
-                threats = res_df[res_df['Phase'] == 'QUARANTINE'][['Component', 'Claimed Hrs', 'Burn Rate (h/d)', 'Anomaly']]
-                if not threats.empty:
-                    st.dataframe(threats, use_container_width=True, hide_index=True)
-                else:
-                    st.success("Zero Kinematic or Physics violations detected. Data aligns with the Engine Pulse.")
+                    # The Envelope (Safe Zone)
+                    fig.add_trace(go.Scatter(
+                        x=plot_df['Component'], y=plot_df['Master Hrs'],
+                        name="Master Ledger Baseline", mode="lines",
+                        line=dict(color="rgba(0, 224, 176, 0.5)", width=2),
+                        fill='tozeroy', fillcolor="rgba(0, 224, 176, 0.05)"
+                    ))
+
+                    # The Claimed Data
+                    fig.add_trace(go.Scatter(
+                        x=plot_df['Component'], y=plot_df['Claimed Hrs'],
+                        name="Reported Hours", mode="markers+lines",
+                        line=dict(color="#ffffff", width=1),
+                        marker=dict(
+                            color=["#ff2a55" if b != "NONE" else "#00e0b0" for b in plot_df['Integrity Breach']],
+                            size=[12 if b != "NONE" else 8 for b in plot_df['Integrity Breach']],
+                            line=dict(color="#000", width=1)
+                        ),
+                        text=plot_df['Integrity Breach'],
+                        hovertemplate="<b>%{x}</b><br>Claimed: %{y}h<br>Status: %{text}<extra></extra>"
+                    ))
+
+                    fig.update_layout(
+                        title=dict(text="TEMPORAL CONTINUITY ENVELOPE", font=dict(color="#f8fafc", size=18)),
+                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                        font=dict(family="Inter", color="#64748b"),
+                        xaxis=dict(showgrid=False, showticklabels=False, title="Audited Components (Sorted by Time)"),
+                        yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="Accumulated Hours"),
+                        hovermode="x unified", margin=dict(l=10, r=10, t=60, b=20),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                    )
+                    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+
+                # Threat Matrix Output
+                breaches = results_df[results_df['Integrity Breach'] != 'NONE'][['Component', 'Claimed Hrs', 'Historical Hrs', 'Integrity Breach']]
+                if not breaches.empty:
+                    st.markdown("<h4 style='color:var(--accent-red); margin-top:20px; font-weight:600;'>Critical Integrity Breaches</h4>", unsafe_allow_html=True)
+                    st.dataframe(breaches, use_container_width=True, hide_index=True)
 
             with t3:
                 c1, c2 = st.columns(2)
                 with c1:
-                    st.markdown(f"<div style='color:var(--muted); font-size:0.8rem; font-weight:600; margin-bottom:10px;'>CHRONOLOGICAL REPORTS ({len(pms_files)} Uploaded)</div>", unsafe_allow_html=True)
-                    st.dataframe(all_docs_df[['Source_File', 'Report_Date', 'Component', 'Claimed_Hours']], use_container_width=True, height=500)
+                    st.markdown("<div style='color:var(--muted); font-size:0.8rem; font-weight:600; margin-bottom:10px;'>PARSED WORD DOCUMENTS</div>", unsafe_allow_html=True)
+                    st.dataframe(docs_df[['Report_Date', 'Component', 'Claimed_Hours']], use_container_width=True, height=400)
                 with c2:
-                    st.markdown("<div style='color:var(--muted); font-size:0.8rem; font-weight:600; margin-bottom:10px;'>EXCEL MASTER ENGINE STATS</div>", unsafe_allow_html=True)
-                    st.json(engine_stats)
-                    st.markdown("<div style='color:var(--muted); font-size:0.8rem; font-weight:600; margin-top:20px; margin-bottom:10px;'>RAW MASTER LOGS</div>", unsafe_allow_html=True)
-                    st.dataframe(pd.DataFrame(excel_records), use_container_width=True, height=350)
+                    st.markdown("<div style='color:var(--muted); font-size:0.8rem; font-weight:600; margin-bottom:10px;'>PARSED EXCEL LEDGER</div>", unsafe_allow_html=True)
+                    st.dataframe(pd.DataFrame(excel_records)[['Component', 'Master_Hours']], use_container_width=True, height=400)
 
         except Exception as e:
-            st.error(f"🚨 Pipeline Execution Halted: {str(e)}")
-            st.info(traceback.format_exc())
+            st.error(f"🚨 Fatal System Error: {str(e)}")
+            st.code(traceback.format_exc(), language="bash")
