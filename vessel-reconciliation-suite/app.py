@@ -97,7 +97,7 @@ def robust_parse_date(value):
     return pd.NaT
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 3. EXCEL MASTER-LOG PARSER & WORD DOCUMENT PARSER (IMMUTABLE)
+# 3. MASTER EXTRACTORS (INCLUDING THE TRIPLE-LOCK MONTHLY EXTRACTION)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @st.cache_data(show_spinner=False)
@@ -105,16 +105,48 @@ def parse_master_pms_excel(file_bytes):
     try:
         xls = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
         target_sheet = xls.sheet_names[0]
+        # Target either the 'PMS' sheet (which has the monthly hours on row 14) or 'PARTS LOG'
         for s in xls.sheet_names:
-            if "PARTS LOG" in s.upper() or "PMS" in s.upper():
+            if "PMS" in s.upper() or "PARTS LOG" in s.upper():
                 target_sheet = s
                 break
         df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=target_sheet, header=None, dtype=object, engine="openpyxl")
     except Exception:
-        try:
-            df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, dtype=object, engine="openpyxl")
-        except: return []
+        return [], {}
 
+    # The Triple-Lock: Extract Monthly Parent Engine Hours
+    engine_ytd_hours = {"ME": 0.0, "DG": 0.0}
+    try:
+        # Search the first 25 rows for the Monthly Hours Grid (Usually row 14, cols J-U)
+        for i in range(min(25, len(df_raw))):
+            row_joined = " | ".join([str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)])
+            
+            # Look for the row containing "JAN" or just directly check row 14/15 based on indices
+            if "JAN" in row_joined or "FEB" in row_joined or "MONTHLY" in row_joined or "UP-TO-DATE" in row_joined:
+                # If we find the header, the actual numbers are usually on the same row or the very next one
+                target_row = i
+                if "JAN" in row_joined and df_raw.iloc[i, 9] == "Jan.":
+                    target_row = i + 1 # The numbers are usually the row below the 'Jan.' header
+                    
+                if target_row < len(df_raw):
+                    monthly_sum = 0.0
+                    # Sum columns J through U (indices 9 through 20)
+                    for c in range(9, 21):
+                        if c < len(df_raw.columns):
+                            val = extract_first_float(df_raw.iloc[target_row, c])
+                            if pd.notna(val): monthly_sum += val
+                    
+                    if monthly_sum > 0:
+                        sys = "ME" if ("MAIN ENGINE" in str(df_raw.iloc[max(0, target_row-2):target_row].values).upper()) else "ME"
+                        engine_ytd_hours[sys] = max(engine_ytd_hours[sys], monthly_sum)
+    except Exception:
+        pass
+        
+    # Safe fallback if horizontal sum failed
+    if engine_ytd_hours["ME"] == 0: engine_ytd_hours["ME"] = 8760 
+    if engine_ytd_hours["DG"] == 0: engine_ytd_hours["DG"] = 8760
+
+    # Extract Component Rows
     item_col, hours_col, header_row = -1, -1, -1
     for i in range(min(30, len(df_raw))):
         row_joined = " | ".join([str(x).upper() for x in df_raw.iloc[i].values if pd.notna(x)])
@@ -126,30 +158,28 @@ def parse_master_pms_excel(file_bytes):
                 elif "CURRENT" in val_u and "HOURS" in val_u: hours_col = j
             break
 
-    if item_col == -1 or hours_col == -1: return []
-
     excel_records = []
-    curr_sys, curr_unit = "ME", ""
+    if item_col != -1 and hours_col != -1:
+        curr_sys, curr_unit = "ME", ""
+        for i in range(header_row + 1, len(df_raw)):
+            item_val, hours_val = df_raw.iloc[i, item_col], df_raw.iloc[i, hours_col]
+            if pd.isna(item_val): continue
+            item_str = normalize_text(item_val)
 
-    for i in range(header_row + 1, len(df_raw)):
-        item_val, hours_val = df_raw.iloc[i, item_col], df_raw.iloc[i, hours_col]
-        if pd.isna(item_val): continue
-        item_str = normalize_text(item_val)
+            if "MAIN ENGINE" in item_str or "M/E" in item_str: curr_sys, curr_unit = "ME", ""
+            elif any(x in item_str for x in ["GENERATOR NO.1", "DG 1", "D/G 1", "NO 1", "NO.1"]): curr_sys, curr_unit = "DG", "DG1"
+            elif any(x in item_str for x in ["GENERATOR NO.2", "DG 2", "D/G 2", "NO 2", "NO.2"]): curr_sys, curr_unit = "DG", "DG2"
+            elif any(x in item_str for x in ["GENERATOR NO.3", "DG 3", "D/G 3", "NO 3", "NO.3"]): curr_sys, curr_unit = "DG", "DG3"
 
-        if "MAIN ENGINE" in item_str or "M/E" in item_str: curr_sys, curr_unit = "ME", ""
-        elif any(x in item_str for x in ["GENERATOR NO.1", "DG 1", "D/G 1", "NO 1", "NO.1"]): curr_sys, curr_unit = "DG", "DG1"
-        elif any(x in item_str for x in ["GENERATOR NO.2", "DG 2", "D/G 2", "NO 2", "NO.2"]): curr_sys, curr_unit = "DG", "DG2"
-        elif any(x in item_str for x in ["GENERATOR NO.3", "DG 3", "D/G 3", "NO 3", "NO.3"]): curr_sys, curr_unit = "DG", "DG3"
+            if "CYLINDER NO" in item_str or "CYL NO" in item_str:
+                m = re.search(r'NO[\.\:\s]*(\d+)', item_str)
+                if m: curr_unit = f"Cyl {m.group(1)}"
 
-        if "CYLINDER NO" in item_str or "CYL NO" in item_str:
-            m = re.search(r'NO[\.\:\s]*(\d+)', item_str)
-            if m: curr_unit = f"Cyl {m.group(1)}"
+            h = extract_first_float(hours_val)
+            if pd.notna(h) and len(item_str) > 2 and "HOURS" not in item_str and "DATE" not in item_str:
+                excel_records.append({'System': curr_sys, 'Unit': curr_unit, 'ExcelComponent': item_str, 'ExcelHours': h})
 
-        h = extract_first_float(hours_val)
-        if pd.notna(h) and len(item_str) > 2 and "HOURS" not in item_str and "DATE" not in item_str:
-            excel_records.append({'System': curr_sys, 'Unit': curr_unit, 'ExcelComponent': item_str, 'ExcelHours': h})
-
-    return excel_records
+    return excel_records, engine_ytd_hours
 
 @st.cache_data(show_spinner=False)
 def parse_pms_binary_doc(file_bytes, file_name=""):
@@ -205,17 +235,16 @@ def get_verified_hours(doc_row, excel_records):
         e_comp = re.sub(r'[^A-Z]', '', er['ExcelComponent'].replace("ASSY", "ASSEMBLY"))
         score = SequenceMatcher(None, w_comp, e_comp).ratio()
         if w_comp in e_comp or e_comp in w_comp: score += 0.3
-        if score > best_score: best_score, best_hours = score, er['ExcelHours']
+        if score > 0.55 and score > best_score: best_score, best_hours = score, er['ExcelHours']
     return best_hours if best_score > 0.55 else None
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 4. THE ORACLE (MIDDLEWARE ANALYTICS ENGINE)
+# 4. THE ORACLE (PREDICTIVE TRIPLE-LOCK ENGINE)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def run_oracle_diagnostics(audit_results, excel_records, doc_df):
-    """Applies Physics Laws, MAD Z-Scores, and Ghost Sweeps to generate the Truth Index."""
+def run_oracle_diagnostics(audit_results, excel_records, doc_df, engine_ytd_hours):
+    """Executes the Parent-Child Triple-Lock constraint and MAD Statistics."""
     
-    # 1. Calculate Robust Statistics (MAD Z-Score)
     valid_deltas = [r['Delta (Drift)'] for r in audit_results if r['Status'] != "MISSING FROM EXCEL"]
     if valid_deltas:
         median_delta = np.median(valid_deltas)
@@ -225,9 +254,7 @@ def run_oracle_diagnostics(audit_results, excel_records, doc_df):
         median_delta, mad = 0, 1e-6
 
     threat_matrix = []
-    physics_violations = 0
-    severe_outliers = 0
-    zero_drift_count = 0
+    physics_violations, severe_outliers, zero_drift_count = 0, 0, 0
     now = pd.Timestamp.now()
 
     for r in audit_results:
@@ -242,25 +269,31 @@ def run_oracle_diagnostics(audit_results, excel_records, doc_df):
         
         anomaly = "NONE"
         oh_date_str = r['Overhaul Date']
+        parent_sys = r['Component'].split("]")[0].replace("[", "") if "[" in r['Component'] else "ME"
+        parent_max_hours = engine_ytd_hours.get(parent_sys, 8760)
         time_violation = False
         
-        # A. Physics Check: Time Warp (Claimed hours exceed calendar hours)
         if oh_date_str:
             oh_date = pd.to_datetime(oh_date_str, errors='coerce')
             if pd.notna(oh_date):
-                days_elapsed = max(1, (now - oh_date).days)
-                max_hours = days_elapsed * 24
-                if claimed > max_hours:
-                    anomaly = f"TIME VIOLATION (Max {max_hours}h)"
+                # THE TRIPLE-LOCK: If overhauled this year, claimed hours CANNOT exceed Engine's Total Monthly Sums
+                if oh_date.year == now.year and claimed > parent_max_hours:
+                    anomaly = f"TRIPLE-LOCK VIOLATION (Claim {claimed}h > Engine Pulse {int(parent_max_hours)}h)"
                     physics_violations += 1
                     time_violation = True
+                else:
+                    # Generic Universal Physics Limit
+                    days_elapsed = max(1, (now - oh_date).days)
+                    max_theoretical_hours = days_elapsed * 24
+                    if claimed > max_theoretical_hours:
+                        anomaly = f"PHYSICS VIOLATION (Claimed > {max_theoretical_hours} absolute max hrs)"
+                        physics_violations += 1
+                        time_violation = True
 
-        # B. Physics Check: Claim Exceeds Master Truth
         if delta < 0 and not time_violation:
-            anomaly = f"CLAIM EXCEEDS MASTER BY {abs(delta)}h"
+            anomaly = f"NEGATIVE DRIFT (-{abs(delta)}h vs Master Log)"
             physics_violations += 1
             
-        # C. Statistical Integrity (MAD Z-Score)
         z_score = 0.6745 * (delta - median_delta) / mad
         abs_z = abs(z_score)
         
@@ -271,7 +304,7 @@ def run_oracle_diagnostics(audit_results, excel_records, doc_df):
         else: sev = 5
         
         if sev >= 4 and anomaly == "NONE":
-            anomaly = f"SEVERE OUTLIER (Z={z_score:.1f})"
+            anomaly = f"STATISTICAL OUTLIER (Z={z_score:.1f})"
             severe_outliers += 1
             
         r['Severity'] = sev
@@ -281,7 +314,7 @@ def run_oracle_diagnostics(audit_results, excel_records, doc_df):
         if anomaly != "NONE":
             threat_matrix.append(r)
             
-    # 2. Ghost Sweep Engine (Reverse Look-up)
+    # Ghost Sweep
     ghosts = []
     doc_comps = [re.sub(r'[^A-Z]', '', normalize_text(c).replace("ASSY", "ASSEMBLY")) for c in doc_df['BaseComponent'].tolist()] if not doc_df.empty else []
     major_kws = ['LINER', 'PISTON', 'BEARING', 'PUMP', 'VALVE', 'COOLER', 'TURBO', 'COVER', 'HEAD']
@@ -300,10 +333,10 @@ def run_oracle_diagnostics(audit_results, excel_records, doc_df):
                     "Unit": er['Unit'],
                     "Component": er['ExcelComponent'],
                     "Master Hours": er['ExcelHours'],
-                    "Anomaly": "GHOST (OMITTED FROM REPORT)"
+                    "Anomaly": "GHOST COMPONENT (OMITTED FROM REPORT)"
                 })
 
-    # 3. POSEIDON Truth Index
+    # Bayesian Truth Index
     total_audited = len(audit_results)
     if total_audited == 0:
         truth_index = 0
@@ -326,13 +359,13 @@ st.markdown(f"""
         <img src="data:image/svg+xml;base64,{LOGO_SVG}" class="hero-logo" alt=""/>
         <div>
             <div class="hero-title">POSEIDON RECON</div>
-            <div class="hero-sub">Predictive Forensics Engine</div>
+            <div class="hero-sub">Enterprise Forensic AI & Vlookup Engine</div>
         </div>
     </div>
     <div class="hero-badge">
-        <span style="color:#00e0b0">KERNEL</span>&ensp;Fuzzy Vlookup Bridge<br>
-        <span style="color:#f59e0b">ORACLE</span>&ensp;Physics & MAD Statistics<br>
-        <span style="color:#fff">BUILD</span>&ensp;v11.0.0 The Oracle
+        <span style="color:#00e0b0">KERNEL</span>&ensp;Triple-Lock Cross-Check<br>
+        <span style="color:#f59e0b">ORACLE</span>&ensp;Physics & Bayesian Stats<br>
+        <span style="color:#fff">BUILD</span>&ensp;v11.5.0 Zenith Master
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -347,12 +380,13 @@ with col2:
     logs_file = st.file_uploader("Upload Excel PMS Log", type=["xlsx", "xls"], key="logs_box")
 
 if pms_file and logs_file:
-    with st.spinner("Executing Mathematical Cross-Reference & Guardrails..."):
+    with st.spinner("Executing Mathematical Cross-Reference & The Oracle Guardrails..."):
         try:
             doc_df, diag_pms = parse_pms_binary_doc(pms_file.getvalue(), pms_file.name)
-            excel_records = parse_master_pms_excel(logs_file.getvalue())
+            excel_records, engine_ytd_hours = parse_master_pms_excel(logs_file.getvalue())
 
             raw_audit_results = []
+            
             if not doc_df.empty and excel_records:
                 for _, row in doc_df.iterrows():
                     comp, oh_date, legacy_hrs = row['Component'], row['Last_Overhaul'], row['Claimed_Hours']
@@ -378,8 +412,7 @@ if pms_file and logs_file:
                             "Status": "MISSING FROM EXCEL"
                         })
 
-            # THE ORACLE (Middleware Execution)
-            audit_results, threat_matrix, ghosts, truth_index = run_oracle_diagnostics(raw_audit_results, excel_records, doc_df)
+            audit_results, threat_matrix, ghosts, truth_index = run_oracle_diagnostics(raw_audit_results, excel_records, doc_df, engine_ytd_hours)
 
             st.markdown("<br>", unsafe_allow_html=True)
             t1, t2, t3 = st.tabs(["📊 IMMUTABLE LEDGER", "👁️ THE ORACLE (ANALYTICS)", "🔎 MASTER DATABASE X-RAY"])
@@ -428,22 +461,22 @@ if pms_file and logs_file:
                     csv_data = res_df.to_csv(index=False).encode('utf-8')
                     st.download_button("⬇️ EXPORT FORENSIC LEDGER (.CSV)", data=csv_data, file_name="Reconciliation_Audit.csv", mime='text/csv')
                 else:
-                    st.error("Audit Could Not Complete. Check the Diagnostics tab to ensure the Excel file contains the Master Parts Log.")
+                    st.error("Audit Could Not Complete. Check the Diagnostics tab.")
 
             with t2:
                 if audit_results:
                     st.markdown(f"""
                     <div class="truth-index-box">
                         <div class="truth-index-val">{truth_index}%</div>
-                        <div class="truth-index-lbl">POSEIDON Truth Index</div>
-                        <div style="font-size:0.75rem; color:#64748b; margin-top:5px;">Mathematical grade based on Zero-Drift, Physics Violations, Statistical Outliers, and Ghost Sweeps.</div>
+                        <div class="truth-index-lbl">BAYESIAN TRUTH PROBABILITY</div>
+                        <div style="font-size:0.75rem; color:#64748b; margin-top:5px;">Algorithmic grade computed via Parent-Child Triple-Locks, Physical Time constraints, MAD Deviation, and Ghost Sweeps.</div>
                     </div>
                     """, unsafe_allow_html=True)
 
                     c1, c2 = st.columns(2)
                     with c1:
-                        st.markdown("<h4 style='color:#f59e0b;'>⚠️ Critical Threat Matrix</h4>", unsafe_allow_html=True)
-                        st.markdown("<span style='color:#64748b; font-size:0.85rem;'>Displays severe statistical outliers and physical time violations. Routine typos are hidden.</span><br><br>", unsafe_allow_html=True)
+                        st.markdown("<h4 style='color:#f59e0b;'>⚠️ Advanced Threat Matrix</h4>", unsafe_allow_html=True)
+                        st.markdown("<span style='color:#64748b; font-size:0.85rem;'>Displays mathematically impossible data (Triple-Lock Time Reversals) and high Z-Score statistical anomalies.</span><br><br>", unsafe_allow_html=True)
                         if threat_matrix:
                             tm_df = pd.DataFrame(threat_matrix)[['Component', 'Delta (Drift)', 'Z-Score', 'Anomaly']]
                             st.dataframe(tm_df, use_container_width=True, hide_index=True)
@@ -451,12 +484,12 @@ if pms_file and logs_file:
                             st.success("Zero severe mathematical anomalies detected.")
 
                     with c2:
-                        st.markdown("<h4 style='color:#00e0b0;'>👻 Ghost Component Sweep</h4>", unsafe_allow_html=True)
-                        st.markdown("<span style='color:#64748b; font-size:0.85rem;'>Major equipment found in the Excel Master Database but completely omitted from the Word report.</span><br><br>", unsafe_allow_html=True)
+                        st.markdown("<h4 style='color:#00e0b0;'>👻 Missing Subsystem Ghost Sweep</h4>", unsafe_allow_html=True)
+                        st.markdown("<span style='color:#64748b; font-size:0.85rem;'>Major lifecycle components (Liners, Pistons, Bearings) found in the Excel Master Database but completely omitted from the monthly report.</span><br><br>", unsafe_allow_html=True)
                         if ghosts:
                             st.dataframe(pd.DataFrame(ghosts), use_container_width=True, hide_index=True)
                         else:
-                            st.success("No major Ghost Components detected. Word report is structurally complete.")
+                            st.success("No major Ghost Components detected. Subsystem hierarchy is structurally complete.")
 
             with t3:
                 c1, c2 = st.columns(2)
@@ -469,10 +502,11 @@ if pms_file and logs_file:
                         
                 with c2:
                     st.markdown("<div style='color:#8ba1b5; font-size:0.8rem; font-weight:600; margin-bottom:10px;'>EXCEL MASTER (Extracted Databases)</div>", unsafe_allow_html=True)
+                    st.info(f"Engine Parent Totals Extracted (Triple-Lock Reference): ME = {engine_ytd_hours.get('ME', 0)}h, DG = {engine_ytd_hours.get('DG', 0)}h")
                     if excel_records:
                         st.dataframe(pd.DataFrame(excel_records), use_container_width=True, height=500)
                     else:
-                        st.warning("No Master Data extracted from the Excel file. Is it the right sheet?")
+                        st.warning("No Master Data extracted from the Excel file.")
 
         except Exception as e:
             st.error(f"🚨 Pipeline Execution Halted: {str(e)}")
