@@ -212,6 +212,15 @@ def run_oracle_piml(audit_results, excel_records, all_docs_df, engine_ytd_hours)
         anomaly = "NONE"
         comp_name, delta, claimed = r['Component'], r['Delta (Drift)'], r['Claimed (Doc)']
         
+        # Initialize all expected prediction keys so they always exist in the dict
+        r['Exp_Mean'] = 0.0
+        r['Exp_Upper'] = 0.0
+        r['Exp_Lower'] = 0.0
+        r['Phase'] = "SAFE"
+        r['Severity'] = 0
+        r['Z-Score'] = 0.0
+        r['Anomaly'] = "NONE"
+        
         if r['Status'] == "MISSING FROM EXCEL":
             r['Phase'] = "QUARANTINE"
             r['Anomaly'] = "MISSING MASTER RECORD"
@@ -256,37 +265,35 @@ def run_oracle_piml(audit_results, excel_records, all_docs_df, engine_ytd_hours)
     ml_features = []
     
     for r in audit_results:
-        z_score = 0.6745 * (r['Delta (Drift)'] - median_delta) / mad
-        r['Z-Score'] = round(z_score, 2)
-        r['Severity'] = 1 if abs(z_score) < 1 else 2 if abs(z_score) < 2 else 3 if abs(z_score) < 3.5 else 4 if abs(z_score) < 5 else 5
-        
-        if r['Severity'] >= 4 and r['Phase'] == "SAFE":
-            r['Anomaly'] = f"SEVERE STAT OUTLIER (Z={z_score:.1f})"
-            threat_matrix.append(r)
+        # Avoid recalculating Z-scores for Quarantined or Missing data
+        if r['Status'] != "MISSING FROM EXCEL":
+            z_score = 0.6745 * (r['Delta (Drift)'] - median_delta) / mad
+            r['Z-Score'] = round(z_score, 2)
+            r['Severity'] = 1 if abs(z_score) < 1 else 2 if abs(z_score) < 2 else 3 if abs(z_score) < 3.5 else 4 if abs(z_score) < 5 else 5
+            
+            if r['Severity'] >= 4 and r['Phase'] == "SAFE":
+                r['Anomaly'] = f"SEVERE STAT OUTLIER (Z={z_score:.1f})"
+                threat_matrix.append(r)
 
-        r['Exp_Mean'] = 0.0
-        r['Exp_Upper'] = 0.0
-        r['Exp_Lower'] = 0.0
+            if r.get('Overhaul Date'):
+                oh_date = pd.to_datetime(r['Overhaul Date'], errors='coerce')
+                if pd.notna(oh_date):
+                    days_alive = max(1, (now - oh_date).days)
+                    sys = "ME" if "ME" in str(r.get('Component', 'ME')) else "DG"
+                    
+                    # Deterministic Prediction Baseline
+                    expected = days_alive * (me_rate if sys == "ME" else dg_rate)
+                    variance = expected * 0.12 + 50 # Conformal variance model (12% error margin + 50h fixed buffer)
+                    
+                    r['Exp_Mean'] = int(min(expected, days_alive * 24))
+                    r['Exp_Upper'] = int(min(expected + variance, days_alive * 24))
+                    r['Exp_Lower'] = int(max(0, expected - variance))
 
-        if r.get('Overhaul Date') and r['Status'] != "MISSING FROM EXCEL":
-            oh_date = pd.to_datetime(r['Overhaul Date'], errors='coerce')
-            if pd.notna(oh_date):
-                days_alive = max(1, (now - oh_date).days)
-                sys = "ME" if "ME" in str(r.get('Component', 'ME')) else "DG"
-                
-                # Deterministic Prediction Baseline
-                expected = days_alive * (me_rate if sys == "ME" else dg_rate)
-                variance = expected * 0.12 + 50 # Conformal variance model (12% error margin + 50h fixed buffer)
-                
-                r['Exp_Mean'] = int(min(expected, days_alive * 24))
-                r['Exp_Upper'] = int(min(expected + variance, days_alive * 24))
-                r['Exp_Lower'] = int(max(0, expected - variance))
-
-                if r['Phase'] == "SAFE":
-                    ml_features.append({
-                        "System": sys, "Component": r['Component'],
-                        "Days_Alive": days_alive, "Claimed": r['Claimed (Doc)'], "Delta": r['Delta (Drift)']
-                    })
+                    if r['Phase'] == "SAFE":
+                        ml_features.append({
+                            "System": sys, "Component": r['Component'],
+                            "Days_Alive": days_alive, "Claimed": r['Claimed (Doc)'], "Delta": r['Delta (Drift)']
+                        })
 
     # Ledoit-Wolf Multivariate Anomaly Detection
     mahalanobis_alerts = 0
@@ -348,7 +355,7 @@ st.markdown(f"""
     <div class="hero-badge">
         <span style="color:var(--teal)">KERNEL</span>&ensp;Triple-Lock Cross-Check<br>
         <span style="color:var(--gold)">ORACLE</span>&ensp;PIML & Quarantine Logic<br>
-        <span style="color:#ffffff">BUILD</span>&ensp;v13.0.0 Zenith Master
+        <span style="color:#ffffff">BUILD</span>&ensp;v13.0.1 Zenith Master
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -395,6 +402,7 @@ if pms_files and logs_file:
 
             with t1:
                 if audit_results:
+                    # 1. Instantiate the Master DataFrame
                     res_df = pd.DataFrame(audit_results)
                     errors_corrected = len(res_df[res_df['Status'] == 'DRIFT DETECTED'])
                     quarantined = len(res_df[res_df['Phase'] == 'QUARANTINE'])
@@ -417,13 +425,27 @@ if pms_files and logs_file:
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    def style_dataframe(row):
-                        if row['Phase'] == 'QUARANTINE': return ['background-color: rgba(255, 42, 85, 0.1); color: #ff8a9f'] * len(row)
-                        if row['Status'] == 'DRIFT DETECTED': return ['color: #c9a84c'] * len(row)
-                        return ['color: #00e0b0'] * len(row)
+                    # 2. Extract Columns to Hide, leaving Phase accessible in the Master DataFrame
+                    hide_cols = ['Severity', 'Z-Score', 'Anomaly', 'Exp_Mean', 'Exp_Upper', 'Exp_Lower', 'Phase']
+                    display_cols = [c for c in res_df.columns if c not in hide_cols]
+                    display_df = res_df[display_cols]
                     
-                    display_df = res_df.drop(columns=['Severity', 'Z-Score', 'Anomaly', 'Exp_Mean', 'Exp_Upper', 'Exp_Lower', 'Phase'], errors='ignore')
-                    st.dataframe(display_df.style.apply(style_dataframe, axis=1), use_container_width=True, hide_index=True)
+                    # 3. Architecturally Bulletproof Styler (Reads from Master, applies to View)
+                    def apply_row_styles(df):
+                        style_df = pd.DataFrame('', index=df.index, columns=df.columns)
+                        for idx in df.index:
+                            phase = res_df.loc[idx, 'Phase']
+                            status = res_df.loc[idx, 'Status']
+                            if phase == 'QUARANTINE':
+                                style_df.loc[idx, :] = 'background-color: rgba(255, 42, 85, 0.1); color: #ff8a9f'
+                            elif status == 'DRIFT DETECTED':
+                                style_df.loc[idx, :] = 'color: #c9a84c'
+                            else:
+                                style_df.loc[idx, :] = 'color: #00e0b0'
+                        return style_df
+                    
+                    # Execute render
+                    st.dataframe(display_df.style.apply(apply_row_styles, axis=None), use_container_width=True, hide_index=True)
                 else:
                     st.error("Audit Could Not Complete. Check the Diagnostics tab.")
 
