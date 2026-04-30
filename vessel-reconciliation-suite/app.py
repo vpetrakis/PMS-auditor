@@ -88,7 +88,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2. CORE DATA EXTRACTION (BULLETPROOF & UNALTERED)
+# 2. CORE DATA EXTRACTION (PROVEN / UNALTERED LOGIC)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def normalize_text(s):
@@ -262,7 +262,6 @@ def parse_pms_binary_doc(file_bytes, file_name=""):
                         })
         i += 1
 
-    # Safe return to prevent KeyErrors on empty extractions
     df = pd.DataFrame(extracted_data)
     if df.empty:
         return df, pd.DataFrame(cells, columns=["Raw Doc Cells"])
@@ -317,15 +316,15 @@ st.markdown(f"""
 
 col1, col2 = st.columns(2)
 with col1:
-    st.markdown("<div style='color:var(--muted); font-size:0.85rem; font-weight:600; margin-bottom:8px; letter-spacing:0.1em;'>1. COMPONENT OVERHAULS (.DOCX)</div>", unsafe_allow_html=True)
+    st.markdown("<div style='color:var(--muted); font-size:0.85rem; font-weight:600; margin-bottom:8px; letter-spacing:0.1em;'>1. COMPONENT OVERHAULS (.DOC / .DOCX)</div>", unsafe_allow_html=True)
     pms_file = st.file_uploader("Upload Word Report", type=["doc", "docx"], key="pms_box", label_visibility="collapsed")
 
 with col2:
-    st.markdown("<div style='color:var(--muted); font-size:0.85rem; font-weight:600; margin-bottom:8px; letter-spacing:0.1em;'>2. EXCEL MASTER LOG (.XLSX)</div>", unsafe_allow_html=True)
+    st.markdown("<div style='color:var(--muted); font-size:0.85rem; font-weight:600; margin-bottom:8px; letter-spacing:0.1em;'>2. EXCEL MASTER LOG (.XLS / .XLSX)</div>", unsafe_allow_html=True)
     logs_file = st.file_uploader("Upload Excel PMS Log", type=["xlsx", "xls"], key="logs_box", label_visibility="collapsed")
 
 if pms_file and logs_file:
-    with st.spinner("Executing Master Cross-Reference Matcher..."):
+    with st.spinner("Executing Cryptographic Master Cross-Reference..."):
         try:
             # Extraction Phase
             doc_df, diag_pms = parse_pms_binary_doc(pms_file.getvalue(), pms_file.name)
@@ -414,12 +413,20 @@ if pms_file and logs_file:
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    # Safe Column Configuration
+                    # ══════════════════════════════════════════════════════════════════════
+                    # RESTORED LEDGER COLORING LOGIC
+                    # ══════════════════════════════════════════════════════════════════════
+                    def colorize_ledger(row):
+                        if row['Status'] == 'DRIFT DETECTED':
+                            return ['background-color: rgba(255, 42, 85, 0.12); color: #ff8a9f; font-weight: 600;'] * len(row)
+                        elif row['Status'] == 'MISSING FROM EXCEL':
+                            return ['background-color: rgba(201, 168, 76, 0.12); color: #e2cb7c; font-weight: 600;'] * len(row)
+                        elif row['Status'] == 'VERIFIED':
+                            return ['color: #00e0b0; font-weight: 400;'] * len(row)
+                        return [''] * len(row)
+
                     st.dataframe(
-                        res_df,
-                        column_config={
-                            "Status": st.column_config.TextColumn("System Flag")
-                        },
+                        res_df.style.apply(colorize_ledger, axis=1),
                         hide_index=True,
                         use_container_width=True
                     )
@@ -428,29 +435,51 @@ if pms_file and logs_file:
 
             with t2:
                 if not res_df.empty:
-                    st.markdown("<h4 style='color:var(--text); font-weight:600; margin-bottom:15px;'>Forensic Divergence Matrix</h4>", unsafe_allow_html=True)
-                    st.markdown("<span style='color:var(--muted); font-size:0.85rem;'>Displays the exact mathematical drift (in hours) between the Word claim and the Master Ledger. Perfect alignment sits at 0.</span><br><br>", unsafe_allow_html=True)
+                    st.markdown("<h4 style='color:var(--text); font-weight:600; margin-bottom:5px;'>Forensic Divergence Matrix</h4>", unsafe_allow_html=True)
+                    st.markdown("<span style='color:var(--muted); font-size:0.85rem;'>Displays the exact mathematical drift between the Word claim and the Master Ledger. Perfect alignment rests exactly on the zero-line.</span><br><br>", unsafe_allow_html=True)
                     
-                    # Filter out missing records for graphing
+                    # ══════════════════════════════════════════════════════════════════════
+                    # UPGRADED FORENSIC ORACLE VISUAL (PLOTLY LOLLIPOP/DIVERGENCE CHART)
+                    # ══════════════════════════════════════════════════════════════════════
                     plot_df = res_df[res_df['Status'] != 'MISSING FROM EXCEL'].copy()
                     
                     if not plot_df.empty:
                         plot_df = plot_df.sort_values('Delta (Drift)', ascending=True)
-                        colors = ["#00e0b0" if d == 0 else "#ff2a55" for d in plot_df['Delta (Drift)']]
                         
                         fig = go.Figure()
-                        fig.add_trace(go.Bar(
-                            y=plot_df['Component'], x=plot_df['Delta (Drift)'], orientation='h',
-                            marker_color=colors, marker_line_width=0,
-                            text=plot_df['Delta (Drift)'].astype(str) + "h", textposition='outside'
-                        ))
                         
-                        fig.add_vline(x=0, line_width=2, line_color="#f8fafc")
+                        # The Zero-Line of Truth
+                        fig.add_vline(x=0, line_width=2, line_color="rgba(255, 255, 255, 0.5)")
+
+                        # Add the Dotted Stem connecting Zero to the Anomaly
+                        for _, row in plot_df.iterrows():
+                            val = row['Delta (Drift)']
+                            color = "#00e0b0" if val == 0 else "#ff2a55"
+                            fig.add_shape(
+                                type="line", x0=0, y0=row['Component'], x1=val, y1=row['Component'],
+                                line=dict(color=color, width=2, dash="dot")
+                            )
+                        
+                        # Add the Glowing Anomaly Markers
+                        fig.add_trace(go.Scatter(
+                            x=plot_df['Delta (Drift)'], y=plot_df['Component'], mode='markers+text',
+                            marker=dict(
+                                size=[14 if d != 0 else 10 for d in plot_df['Delta (Drift)']], 
+                                color=["#ff2a55" if d != 0 else "#00e0b0" for d in plot_df['Delta (Drift)']], 
+                                line=dict(width=2, color="#030712")
+                            ),
+                            text=[f" {d}h" if d > 0 else (f"{d}h " if d < 0 else "SYNC") for d in plot_df['Delta (Drift)']], 
+                            textposition=["middle right" if d >= 0 else "middle left" for d in plot_df['Delta (Drift)']],
+                            textfont=dict(color="#f8fafc", size=12),
+                            hovertemplate="<b>%{y}</b><br>Drift Detected: %{x} Hours<extra></extra>"
+                        ))
                         
                         fig.update_layout(
                             plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(family="Inter", color='#94a3b8'),
-                            xaxis=dict(title="Delta Drift (Verified Hours - Claimed Hours)", gridcolor='rgba(255,255,255,0.05)', zeroline=False),
-                            yaxis=dict(gridcolor='rgba(0,0,0,0)'), height=max(400, len(plot_df)*30), margin=dict(l=10, r=40, t=20, b=20)
+                            xaxis=dict(title="Mathematical Drift (Verified - Claimed Hours)", gridcolor='rgba(255,255,255,0.05)', zeroline=False),
+                            yaxis=dict(gridcolor='rgba(0,0,0,0)', showline=False), 
+                            height=max(500, len(plot_df)*35), margin=dict(l=10, r=60, t=20, b=20),
+                            showlegend=False
                         )
                         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
