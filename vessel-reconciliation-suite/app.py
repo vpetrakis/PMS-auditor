@@ -628,48 +628,79 @@ def chart_fuel(df):
     sea = df[(df["Phase"] == "SEA") & (~df["Status"].str.contains("QUARANTINE"))]
     port = df[(df["Phase"] == "PORT") & (~df["Status"].str.contains("QUARANTINE"))]
 
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.08)
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        row_heights=[0.7, 0.3],
+        vertical_spacing=0.08
+    )
 
     if not sea.empty:
         fig.add_trace(
             go.Bar(
-                x=sea["Timeline"], y=sea["Phys_Burn"], name="Sea Fuel",
-                marker_color="rgba(0,224,176,0.15)", marker_line_color="#00e0b0", marker_line_width=1.5
+                x=sea["Timeline"],
+                y=sea["Phys_Burn"],
+                name="Sea Fuel",
+                marker_color="rgba(0,224,176,0.15)",
+                marker_line_color="#00e0b0",
+                marker_line_width=1.5
             ),
-            row=1, col=1
+            row=1,
+            col=1
         )
+
         fig.add_trace(
             go.Scatter(
-                x=sea["Timeline"], y=sea["Daily_Burn"], name="Sea MT/day", mode="lines+markers",
+                x=sea["Timeline"],
+                y=sea["Daily_Burn"],
+                name="Sea MT/day",
+                mode="lines+markers",
                 line=dict(color="#00e0b0", width=3, shape="spline"),
-                fill="tozeroy", fillcolor="rgba(0,224,176,0.05)",
+                fill="tozeroy",
+                fillcolor="rgba(0,224,176,0.05)",
                 marker=dict(size=8, color="#051014", line=dict(color="#00e0b0", width=2))
             ),
-            row=1, col=1
+            row=1,
+            col=1
         )
+
         fig.add_trace(
             go.Scatter(
-                x=sea["Timeline"], y=sea["Speed_kn"], name="Sea Speed", mode="lines+markers",
+                x=sea["Timeline"],
+                y=sea["Speed_kn"],
+                name="Sea Speed",
+                mode="lines+markers",
                 line=dict(color="#c9a84c", width=3, shape="spline"),
-                fill="tozeroy", fillcolor="rgba(201,168,76,0.05)",
+                fill="tozeroy",
+                fillcolor="rgba(201,168,76,0.05)",
                 marker=dict(size=8, color="#051014", line=dict(color="#c9a84c", width=2))
             ),
-            row=2, col=1
+            row=2,
+            col=1
         )
 
     if not port.empty:
         fig.add_trace(
             go.Bar(
-                x=port["Timeline"], y=port["Phys_Burn"], name="Port Fuel",
-                marker_color="rgba(255,42,85,0.15)", marker_line_color="#ff2a55", marker_line_width=1.5
+                x=port["Timeline"],
+                y=port["Phys_Burn"],
+                name="Port Fuel",
+                marker_color="rgba(255,42,85,0.15)",
+                marker_line_color="#ff2a55",
+                marker_line_width=1.5
             ),
-            row=1, col=1
+            row=1,
+            col=1
         )
 
     fig.update_layout(
         **_BL,
         margin=_M,
-        title=dict(text="Tri-State Fuel Consumption & Kinematics", font=dict(size=24, family="Bricolage Grotesque", color="#fff")),
+        title=dict(
+            text="Tri-State Fuel Consumption & Kinematics",
+            font=dict(size=24, family="Bricolage Grotesque", color="#fff")
+        ),
         barmode="group",
         showlegend=True,
         height=700,
