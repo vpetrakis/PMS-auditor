@@ -18,13 +18,13 @@ warnings.filterwarnings("ignore")
 st.set_page_config(page_title="PMS Auditor | Enterprise Recon", layout="wide", initial_sidebar_state="collapsed")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 1. ENTERPRISE CSS & HIGH-END SVG ENGINE
+# 1. ENTERPRISE CSS & HIGH-END SVG ENGINE (ZERO EMOJIS)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _svg(s):
     return f"data:image/svg+xml;base64,{base64.b64encode(s.encode()).decode()}"
 
-# High-Fidelity SVG Paths (No standard emojis allowed)
+# High-Fidelity SVG Paths
 SVG_LOGO = _svg('<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="pg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#00e0b0"/><stop offset="100%" stop-color="#0284c7"/></linearGradient></defs><circle cx="24" cy="24" r="22" fill="none" stroke="url(#pg)" stroke-width="1.5" opacity="0.3"/><path d="M24 6L24 42" stroke="url(#pg)" stroke-width="2" stroke-linecap="round"/><path d="M10 24L38 24" stroke="url(#pg)" stroke-width="2" stroke-linecap="round"/><circle cx="24" cy="24" r="4" fill="#030712" stroke="url(#pg)" stroke-width="2"/></svg>')
 SVG_SYNC = _svg('<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M21 12c0 4.97-4.03 9-9 9s-9-4.03-9-9 4.03-9 9-9c2.12 0 4.07.74 5.61 1.97" fill="none" stroke="#00e0b0" stroke-width="2" stroke-linecap="round"/><path d="M16 4v5h-5" fill="none" stroke="#00e0b0" stroke-width="2" stroke-linecap="round"/><path d="M10 14l2 2 4-4" fill="none" stroke="#00e0b0" stroke-width="2" stroke-linecap="round"/></svg>')
 SVG_ALERT = _svg('<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 22C6.477 22 2 17.523 2 12S6.477 2 12 2s10 4.477 10 10-4.477 10-10 10zm-1-11v6h2v-6h-2zm0-4v2h2V7h-2z" fill="#ff2a55"/></svg>')
@@ -88,7 +88,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2. CORE DATA EXTRACTION (PROVEN / UNALTERED LOGIC)
+# 2. CORE DATA EXTRACTION (BULLETPROOF & UNALTERED)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def normalize_text(s):
@@ -262,7 +262,7 @@ def parse_pms_binary_doc(file_bytes, file_name=""):
                         })
         i += 1
 
-    # Failsafe logic to prevent KeyError: ['Last_Overhaul']
+    # Safe return to prevent KeyErrors on empty extractions
     df = pd.DataFrame(extracted_data)
     if df.empty:
         return df, pd.DataFrame(cells, columns=["Raw Doc Cells"])
@@ -414,7 +414,7 @@ if pms_file and logs_file:
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    # Safe Column Configuration to prevent Drop Errors
+                    # Safe Column Configuration
                     st.dataframe(
                         res_df,
                         column_config={
@@ -466,7 +466,8 @@ if pms_file and logs_file:
                 with c2:
                     st.markdown("<div style='color:var(--muted); font-size:0.8rem; font-weight:600; margin-bottom:10px;'>EXCEL MASTER (Extracted Databases)</div>", unsafe_allow_html=True)
                     if excel_records:
-                        st.dataframe(pd.DataFrame(excel_records)[['Component', 'ExcelHours']], use_container_width=True, height=500)
+                        # KEYERROR FIX APPLIED HERE: 'Component' is now 'ExcelComponent'
+                        st.dataframe(pd.DataFrame(excel_records)[['ExcelComponent', 'ExcelHours']], use_container_width=True, height=500)
                     else:
                         st.warning("No Master Data extracted from the Excel file.")
 
