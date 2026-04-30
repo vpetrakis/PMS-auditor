@@ -614,6 +614,7 @@ _BL = dict(
 )
 
 _M = dict(l=15, r=15, t=85, b=30)
+
 _AX = dict(
     gridcolor="rgba(255,255,255,0.02)",
     zerolinecolor="rgba(255,255,255,0.05)",
@@ -625,8 +626,8 @@ _AX = dict(
 )
 
 def chart_fuel(df):
-    sea = df[(df["Phase"] == "SEA") & (~df["Status"].str.contains("QUARANTINE"))]
-    port = df[(df["Phase"] == "PORT") & (~df["Status"].str.contains("QUARANTINE"))]
+    sea = df[(df["Phase"] == "SEA") & (~df["Status"].str.contains("QUARANTINE", na=False))]
+    port = df[(df["Phase"] == "PORT") & (~df["Status"].str.contains("QUARANTINE", na=False))]
 
     fig = make_subplots(
         rows=2,
@@ -659,7 +660,11 @@ def chart_fuel(df):
                 line=dict(color="#00e0b0", width=3, shape="spline"),
                 fill="tozeroy",
                 fillcolor="rgba(0,224,176,0.05)",
-                marker=dict(size=8, color="#051014", line=dict(color="#00e0b0", width=2))
+                marker=dict(
+                    size=8,
+                    color="#051014",
+                    line=dict(color="#00e0b0", width=2)
+                )
             ),
             row=1,
             col=1
@@ -674,7 +679,11 @@ def chart_fuel(df):
                 line=dict(color="#c9a84c", width=3, shape="spline"),
                 fill="tozeroy",
                 fillcolor="rgba(201,168,76,0.05)",
-                marker=dict(size=8, color="#051014", line=dict(color="#c9a84c", width=2))
+                marker=dict(
+                    size=8,
+                    color="#051014",
+                    line=dict(color="#c9a84c", width=2)
+                )
             ),
             row=2,
             col=1
@@ -704,10 +713,116 @@ def chart_fuel(df):
         barmode="group",
         showlegend=True,
         height=700,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
     )
+
     fig.update_xaxes(tickangle=-45, automargin=True, **_AX)
     fig.update_yaxes(**_AX)
+    return fig
+
+
+def chart_lube(df):
+    fig = go.Figure()
+
+    if df.get("MELO_L", pd.Series([0], dtype=float)).sum() > 0:
+        fig.add_trace(
+            go.Bar(
+                x=df["Timeline"],
+                y=df["MELO_L"],
+                name="MELO",
+                marker_color="rgba(0,224,176,0.15)",
+                marker_line_color="#00e0b0",
+                marker_line_width=1.5
+            )
+        )
+
+    if df.get("Total_CYLO", pd.Series([0], dtype=float)).sum() > 0:
+        fig.add_trace(
+            go.Bar(
+                x=df["Timeline"],
+                y=df["Total_CYLO"],
+                name="CYLO (All)",
+                marker_color="rgba(255,42,85,0.15)",
+                marker_line_color="#ff2a55",
+                marker_line_width=1.5
+            )
+        )
+
+    if df.get("GELO_L", pd.Series([0], dtype=float)).sum() > 0:
+        fig.add_trace(
+            go.Bar(
+                x=df["Timeline"],
+                y=df["GELO_L"],
+                name="GELO",
+                marker_color="rgba(201,168,76,0.15)",
+                marker_line_color="#c9a84c",
+                marker_line_width=1.5
+            )
+        )
+
+    fig.update_layout(
+        **_BL,
+        margin=_M,
+        title=dict(
+            text="Lubricant Consumption (Liters)",
+            font=dict(size=24, family="Bricolage Grotesque", color="#fff")
+        ),
+        barmode="group",
+        showlegend=True,
+        height=500,
+        yaxis=dict(title="L", **_AX),
+        xaxis=dict(automargin=True, **_AX)
+    )
+
+    fig.update_xaxes(tickangle=-45)
+    return fig
+
+
+def chart_cum_drift(cum_drift):
+    if not cum_drift:
+        return None
+
+    cdf = pd.DataFrame(cum_drift)
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=cdf["dt"],
+            y=cdf["gap"],
+            mode="lines+markers",
+            name="A−L Gap",
+            line=dict(color="#c9a84c", width=3),
+            marker=dict(
+                size=8,
+                color="#051014",
+                line=dict(color="#c9a84c", width=2)
+            ),
+            fill="tozeroy",
+            fillcolor="rgba(201,168,76,0.08)"
+        )
+    )
+
+    fig.add_hline(y=0, line=dict(color="rgba(255,255,255,0.15)", width=1))
+
+    fig.update_layout(
+        **_BL,
+        margin=_M,
+        title=dict(
+            text="Physical vs Logged Mass Drift",
+            font=dict(size=24, family="Bricolage Grotesque", color="#fff")
+        ),
+        height=500,
+        yaxis=dict(title="FO_A − FO_L (MT)", **_AX),
+        xaxis=dict(automargin=True, **_AX)
+    )
+
+    fig.update_xaxes(tickangle=-45)
     return fig
 
 def chart_lube(df):
